@@ -32,10 +32,25 @@ export default function LoginPage() {
     router.push('/dashboard');
   }
 
+  async function handleGoogleLogin() {
+    setError('');
+    const { error: googleError } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: `${window.location.origin}/auth/callback` },
+    });
+    if (googleError) setError(googleError.message);
+  }
+
   return (
     <div className="page">
       <h1>Log in</h1>
       <p className="subtitle">Welcome back to GradeFlow.</p>
+
+      <button type="button" onClick={handleGoogleLogin} style={{ background: 'white', color: '#1f2937', border: '1px solid #d1d5db' }}>
+        Continue with Google
+      </button>
+
+      <p className="subtitle" style={{ textAlign: 'center', margin: '16px 0' }}>or</p>
 
       <form onSubmit={handleLogin}>
         <label htmlFor="email">Email</label>
