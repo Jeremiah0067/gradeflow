@@ -40,7 +40,12 @@ export default function DashboardPage() {
       .from('users')
       .select('*')
       .eq('id', userId)
-      .single();
+      .maybeSingle();
+
+    if (!profileData) {
+      router.push('/select-role');
+      return;
+    }
 
     if (profileError) {
       setError(profileError.message);
