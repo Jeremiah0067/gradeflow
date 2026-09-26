@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { supabase } from '../../../lib/supabaseClient';
 
+const emptyCriterion = () => ({ label: '', maxPoints: '' });
+
 export default function ClassPage() {
   const router = useRouter();
   const { classId } = useParams();
@@ -17,8 +19,10 @@ export default function ClassPage() {
   const [title, setTitle] = useState('');
   const [instructions, setInstructions] = useState('');
   const [type, setType] = useState('typed');
-  const [maxPoints, setMaxPoints] = useState(10);
+  const [dueDate, setDueDate] = useState('');
   const [creating, setCreating] = useState(false);
+
+  const [criteria, setCriteria] = useState([emptyCriterion()]);
 
   useEffect(() => {
     loadClass();
@@ -49,7 +53,7 @@ export default function ClassPage() {
 
     const { data: assignmentData, error: aErr } = await supabase
       .from('assignments')
-      .select('*')
+      .select('*, rubric_criteria(*)')
       .eq('class_id', classId)
       .order('created_at', { ascending: false });
 
@@ -59,29 +63,77 @@ export default function ClassPage() {
     setLoading(false);
   }
 
+  function updateCriterion(index, field, value) {
+    setCriteria((prev) => prev.map((c, i) => (i === index ? { ...c, [field]: value } : c)));
+  }
+
+  function addCriterion() {
+    setCriteria((prev) => [...prev, emptyCriterion()]);
+  }
+
+  function removeCriterion(index) {
+    setCriteria((prev) => (prev.length === 1 ? prev : prev.filter((_, i) => i !== index)));
+  }
+
+  const rubricTotal = criteria.reduce((sum, c) => sum + (Number(c.maxPoints) || 0), 0);
+
   async function handleCreateAssignment(e) {
     e.preventDefault();
     setCreating(true);
     setError('');
 
-    const { error: insertError } = await supabase.from('assignments').insert({
-      class_id: classId,
-      title,
-      instructions,
-      type,
-      max_points: Number(maxPoints),
-    });
+    const validCriteria = criteria.filter((c) => c.label.trim() && Number(c.maxPoints) > 0);
 
-    setCreating(false);
-
-    if (insertError) {
-      setError(insertError.message);
+    if (type !== 'quiz' && validCriteria.length === 0) {
+      setError('Add at least one rubric criterion with a label and point value.');
+      setCreating(false);
       return;
     }
 
+    const maxPoints = type === 'quiz' ? 0 : rubricTotal;
+
+    const { data: assignment, error: insertError } = await supabase
+      .from('assignments')
+      .insert({
+        class_id: classId,
+        title,
+        instructions,
+        type,
+        max_points: maxPoints,
+        due_date: dueDate ? new Date(dueDate).toISOString() : null,
+      })
+      .select()
+      .single();
+
+    if (insertError) {
+      setError(insertError.message);
+      setCreating(false);
+      return;
+    }
+
+    if (type !== 'quiz') {
+      const criteriaRows = validCriteria.map((c, i) => ({
+        assignment_id: assignment.id,
+        label: c.label.trim(),
+        max_points: Number(c.maxPoints),
+        sort_order: i,
+      }));
+
+      const { error: criteriaError } = await supabase.from('rubric_criteria').insert(criteriaRows);
+
+      if (criteriaError) {
+        setError(`Assignment created, but rubric failed to save: ${criteriaError.message}`);
+        setCreating(false);
+        loadClass();
+        return;
+      }
+    }
+
+    setCreating(false);
     setTitle('');
     setInstructions('');
-    setMaxPoints(10);
+    setDueDate('');
+    setCriteria([emptyCriterion()]);
     loadClass();
   }
 
@@ -126,8 +178,60 @@ export default function ClassPage() {
               <option value="quiz">Quiz</option>
             </select>
 
-            <label>Max points</label>
-            <input type="number" value={maxPoints} onChange={(e) => setMaxPoints(e.target.value)} min={1} />
+            <label>Due date (optional)</label>
+            <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+
+            {type === 'quiz' ? (
+              <p className="subtitle" style={{ marginTop: 16 }}>
+                Quiz questions aren&apos;t built into this form yet — add them via Supabase&apos;s{' '}
+                <code>quiz_questions</code> table for now, referencing this assignment&apos;s id once created.
+              </p>
+            ) : (
+              <>
+                <label>Rubric</label>
+                {criteria.map((c, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'flex-start' }}>
+                    <input
+                      style={{ flex: 3 }}
+                      placeholder="Criterion, e.g. Names both required inputs"
+                      value={c.label}
+                      onChange={(e) => updateCriterion(i, 'label', e.target.value)}
+                    />
+                    <input
+                      style={{ flex: 1 }}
+                      type="number"
+                      min={1}
+                      placeholder="Pts"
+                      value={c.maxPoints}
+                      onChange={(e) => updateCriterion(i, 'maxPoints', e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeCriterion(i)}
+                      style={{
+                        width: 'auto',
+                        marginTop: 0,
+                        background: '#fee2e2',
+                        color: '#b91c1c',
+                        padding: '10px 12px',
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={addCriterion}
+                  style={{ background: 'white', color: '#1f2937', border: '1px dashed #d1d5db', marginTop: 4 }}
+                >
+                  + Add criterion
+                </button>
+                <p className="subtitle" style={{ marginTop: 8, marginBottom: 0 }}>
+                  Total: {rubricTotal} pts
+                </p>
+              </>
+            )}
 
             <button type="submit" disabled={creating}>
               {creating ? 'Creating...' : 'Create assignment'}
