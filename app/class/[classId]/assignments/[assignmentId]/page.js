@@ -88,9 +88,8 @@ export default function AssignmentPage() {
     setLoading(false);
   }
 
-  // Typed answer: insert directly, status pending_ai_review. A Supabase
-  // Database Webhook (configured in the dashboard, not in code) calls
-  // /api/process-grading asynchronously - this returns instantly.
+  // Typed answer: insert directly, status pending_ai_review, then fire off
+  // grading without waiting for it - the student sees "submitted" instantly.
   async function handleSubmit(e) {
     e.preventDefault();
     setSubmitting(true);
@@ -99,12 +98,16 @@ export default function AssignmentPage() {
     const { data: sessionData } = await supabase.auth.getSession();
     const userId = sessionData.session.user.id;
 
-    const { error: insertError } = await supabase.from('submissions').insert({
-      assignment_id: assignmentId,
-      student_id: userId,
-      status: 'pending_ai_review',
-      raw_content: { text: answerText },
-    });
+    const { data: newSubmission, error: insertError } = await supabase
+      .from('submissions')
+      .insert({
+        assignment_id: assignmentId,
+        student_id: userId,
+        status: 'pending_ai_review',
+        raw_content: { text: answerText },
+      })
+      .select()
+      .single();
 
     setSubmitting(false);
 
@@ -112,6 +115,12 @@ export default function AssignmentPage() {
       setError(insertError.message);
       return;
     }
+
+    fetch('/api/process-grading', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ record: newSubmission }),
+    }).catch(() => {});
 
     load();
   }
@@ -123,9 +132,8 @@ export default function AssignmentPage() {
     setImagePreview(URL.createObjectURL(file));
   }
 
-  // Handwritten: upload the image to the private "submissions" storage
-  // bucket, then insert a row referencing its path. Grading happens later
-  // via the same async webhook pipeline.
+  // Handwritten: upload the image, insert a row referencing its path, then
+  // fire off grading the same fire-and-forget way as the typed path above.
   async function handleHandwrittenSubmit(e) {
     e.preventDefault();
     if (!imageFile) return;
@@ -145,12 +153,16 @@ export default function AssignmentPage() {
       return;
     }
 
-    const { error: insertError } = await supabase.from('submissions').insert({
-      assignment_id: assignmentId,
-      student_id: userId,
-      status: 'pending_ai_review',
-      raw_content: { image_path: path, mime_type: imageFile.type },
-    });
+    const { data: newSubmission, error: insertError } = await supabase
+      .from('submissions')
+      .insert({
+        assignment_id: assignmentId,
+        student_id: userId,
+        status: 'pending_ai_review',
+        raw_content: { image_path: path, mime_type: imageFile.type },
+      })
+      .select()
+      .single();
 
     setSubmitting(false);
 
@@ -158,6 +170,12 @@ export default function AssignmentPage() {
       setError(insertError.message);
       return;
     }
+
+    fetch('/api/process-grading', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ record: newSubmission }),
+    }).catch(() => {});
 
     load();
   }
