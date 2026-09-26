@@ -36,6 +36,13 @@ export async function GET(req) {
   });
   const profile = await profileRes.json();
 
+  if (!profileRes.ok || !profile.id) {
+    return Response.json(
+      { error: 'Could not fetch Google profile id. Check that the "openid" and "email" scopes are included.' },
+      { status: 500 }
+    );
+  }
+
   const supabase = getServiceSupabase();
   const tokenExpiry = new Date(Date.now() + tokenData.expires_in * 1000).toISOString();
 
