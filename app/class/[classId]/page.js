@@ -24,6 +24,8 @@ export default function ClassPage() {
 
   const [criteria, setCriteria] = useState([emptyCriterion()]);
 
+  const [extracting, setExtracting] = useState(false);
+
   useEffect(() => {
     loadClass();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -61,6 +63,47 @@ export default function ClassPage() {
     setAssignments(assignmentData || []);
 
     setLoading(false);
+  }
+
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.split(',')[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function handleDocumentUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setExtracting(true);
+    setError('');
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData?.session?.access_token;
+
+    const fileBase64 = await fileToBase64(file);
+
+    const res = await fetch('/api/extract-document-text', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ mimeType: file.type, fileBase64 }),
+    });
+
+    const data = await res.json();
+    setExtracting(false);
+
+    if (!res.ok) {
+      setError(data.error || 'Failed to extract text from the document.');
+      return;
+    }
+
+    setInstructions(data.extractedText);
   }
 
   function updateCriterion(index, field, value) {
@@ -170,6 +213,17 @@ export default function ClassPage() {
 
             <label>Instructions</label>
             <textarea rows={3} value={instructions} onChange={(e) => setInstructions(e.target.value)} />
+            <p className="subtitle" style={{ marginTop: 4, marginBottom: 0 }}>
+              Or upload a document (PDF or image) to fill this in automatically:
+            </p>
+            <input
+              type="file"
+              accept="application/pdf,image/*"
+              onChange={handleDocumentUpload}
+              disabled={extracting}
+              style={{ marginTop: 6 }}
+            />
+            {extracting && <p className="subtitle" style={{ marginTop: 4 }}>Extracting text...</p>}
 
             <label>Type</label>
             <select value={type} onChange={(e) => setType(e.target.value)}>
