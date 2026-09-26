@@ -253,23 +253,29 @@ export default function ClassPage() {
 
   return (
     <div className="page-wide">
-      <div className="top-bar">
-        <div>
-          <h1>{klass?.name}</h1>
-          <p className="subtitle" style={{ marginBottom: 0 }}>
-            {klass?.subject} {profile?.role === 'teacher' && `· Join code: ${klass?.join_code}`}
-          </p>
+      <div className="appbar" style={{ margin: '-24px -24px 24px -24px' }}>
+        <div className="appbar-left">
+          <button
+            type="button"
+            className="btn-secondary"
+            style={{ width: 'auto', margin: 0, padding: '8px 14px' }}
+            onClick={() => router.push('/dashboard')}
+          >
+            ← Dashboard
+          </button>
         </div>
-        <button style={{ width: 'auto', marginTop: 0 }} onClick={() => router.push('/dashboard')}>
-          Back to dashboard
-        </button>
       </div>
+
+      <h1>{klass?.name}</h1>
+      <p className="subtitle">
+        {klass?.subject} {profile?.role === 'teacher' && `· Join code: ${klass?.join_code}`}
+      </p>
 
       {error && <p className="error-text">{error}</p>}
 
       {profile?.role === 'teacher' && (
-        <div className="page" style={{ margin: '0 0 24px 0', maxWidth: 'none' }}>
-          <h1 style={{ fontSize: 16 }}>New assignment</h1>
+        <div className="surface">
+          <p className="section-heading">New assignment</p>
           <form onSubmit={handleCreateAssignment}>
             <label>Title</label>
             <input value={title} onChange={(e) => setTitle(e.target.value)} required />
@@ -313,7 +319,7 @@ export default function ClassPage() {
               </p>
             ) : (
               <>
-                <label>Rubric</label>
+                <p className="section-heading" style={{ marginTop: 20 }}>Rubric</p>
                 <p className="subtitle" style={{ marginTop: 0, marginBottom: 6 }}>
                   Or upload an existing rubric document and let AI fill in the rows below:
                 </p>
@@ -326,7 +332,7 @@ export default function ClassPage() {
                 />
                 {extractingRubric && <p className="subtitle">Extracting rubric...</p>}
                 {criteria.map((c, i) => (
-                  <div key={i} style={{ marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid #f3f4f6' }}>
+                  <div key={i} className="criterion-row">
                     <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
                       <input
                         style={{ flex: 3 }}
@@ -384,21 +390,27 @@ export default function ClassPage() {
         </div>
       )}
 
-      <h1 style={{ fontSize: 16 }}>Assignments</h1>
+      <p className="section-heading">Assignments</p>
       {assignments.length === 0 && <p className="subtitle">No assignments yet.</p>}
-      {assignments.map((a) => (
-        <div
-          key={a.id}
-          className="class-card"
-          onClick={() => router.push(`/class/${classId}/assignments/${a.id}`)}
-        >
-          <h3>{a.title}</h3>
-          <p style={{ margin: 0, color: '#6b7280' }}>
-            {a.type} · {a.max_points} pts
-            {a.due_date && ` · due ${new Date(a.due_date).toLocaleDateString()}`}
-          </p>
-        </div>
-      ))}
+      {assignments.map((a) => {
+        const icon = a.type === 'quiz' ? '📝' : a.type === 'handwritten' ? '✍️' : '📄';
+        return (
+          <div
+            key={a.id}
+            className="assignment-row"
+            onClick={() => router.push(`/class/${classId}/assignments/${a.id}`)}
+          >
+            <div className="assignment-icon">{icon}</div>
+            <div>
+              <p className="assignment-row-title">{a.title}</p>
+              <p className="assignment-row-meta">
+                {a.type} · {a.max_points} pts
+                {a.due_date && ` · due ${new Date(a.due_date).toLocaleDateString()}`}
+              </p>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
