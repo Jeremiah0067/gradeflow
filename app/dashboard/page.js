@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
+import { colorForClass } from '../../lib/classColors';
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -215,30 +216,34 @@ export default function DashboardPage() {
 
   return (
     <div className="page-wide">
-      <div className="top-bar">
-        <div>
-          <h1>Hi, {profile?.name}</h1>
-          <p className="subtitle" style={{ marginBottom: 0 }}>
-            {profile?.role === 'teacher' ? 'Teacher dashboard' : 'Student dashboard'}
-          </p>
+      <div className="appbar" style={{ margin: '-24px -24px 24px -24px' }}>
+        <div className="appbar-left">
+          <div className="appbar-logo">G</div>
+          <span className="appbar-title">GradeFlow</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          {profile?.role === 'teacher' && (
-            <a href="/inbox" style={{ fontSize: 14 }}>
-              Ungraded work
-            </a>
-          )}
-          <button style={{ width: 'auto', marginTop: 0 }} onClick={handleLogout}>
+        <div className="appbar-right">
+          <span className="subtitle" style={{ margin: 0 }}>
+            {profile?.role === 'teacher' ? 'Teacher' : 'Student'}
+          </span>
+          <div className="avatar-chip">{profile?.name?.[0]?.toUpperCase() || '?'}</div>
+          <button
+            type="button"
+            className="btn-secondary"
+            style={{ width: 'auto', margin: 0, padding: '8px 14px' }}
+            onClick={handleLogout}
+          >
             Log out
           </button>
         </div>
       </div>
 
+      <h1 style={{ marginBottom: 20 }}>Hi, {profile?.name}</h1>
+
       {error && <p className="error-text">{error}</p>}
 
       {profile?.role === 'teacher' && (
-        <div className="page" style={{ margin: '0 0 24px 0', maxWidth: 'none' }}>
-          <h1 style={{ fontSize: 16 }}>Google Classroom</h1>
+        <div className="surface">
+          <p className="section-heading">Google Classroom</p>
 
           {!googleConnected ? (
             <>
@@ -294,8 +299,8 @@ export default function DashboardPage() {
       )}
 
       {profile?.role === 'teacher' && (
-        <div className="page" style={{ margin: '0 0 24px 0', maxWidth: 'none' }}>
-          <h1 style={{ fontSize: 16 }}>Create a class</h1>
+        <div className="surface">
+          <p className="section-heading">Create a class</p>
           <form onSubmit={handleCreateClass}>
             <label>Class name</label>
             <input value={newClassName} onChange={(e) => setNewClassName(e.target.value)} required />
@@ -309,8 +314,8 @@ export default function DashboardPage() {
       )}
 
       {profile?.role === 'student' && (
-        <div className="page" style={{ margin: '0 0 24px 0', maxWidth: 'none' }}>
-          <h1 style={{ fontSize: 16 }}>Join a class</h1>
+        <div className="surface">
+          <p className="section-heading">Join a class</p>
           <form onSubmit={handleJoinClass}>
             <label>Class code</label>
             <input
@@ -326,17 +331,24 @@ export default function DashboardPage() {
         </div>
       )}
 
-      <h1 style={{ fontSize: 16 }}>Your classes</h1>
+      <p className="section-heading">Your classes</p>
       {classes.length === 0 && <p className="subtitle">No classes yet.</p>}
-      {classes.map((c) => (
-        <div key={c.id} className="class-card" onClick={() => router.push(`/class/${c.id}`)}>
-          <h3>
-            {c.name} {c.google_course_id && <span style={{ fontSize: 12, color: '#6b7280' }}>(from Google Classroom)</span>}
-          </h3>
-          <p style={{ margin: '0 0 8px 0', color: '#6b7280' }}>{c.subject}</p>
-          {profile?.role === 'teacher' && !c.google_course_id && <p className="code">Join code: {c.join_code}</p>}
-        </div>
-      ))}
+      <div className="class-grid">
+        {classes.map((c) => (
+          <div key={c.id} className="class-card" onClick={() => router.push(`/class/${c.id}`)}>
+            <div className="class-card-banner" style={{ background: colorForClass(c.name) }}>
+              <h3>{c.name}</h3>
+              {c.subject && <p>{c.subject}</p>}
+            </div>
+            <div className="class-card-body">
+              {c.google_course_id && <span className="tag">From Google Classroom</span>}
+              {profile?.role === 'teacher' && !c.google_course_id && (
+                <span className="code">Join code: {c.join_code}</span>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
