@@ -222,9 +222,16 @@ export default function DashboardPage() {
             {profile?.role === 'teacher' ? 'Teacher dashboard' : 'Student dashboard'}
           </p>
         </div>
-        <button style={{ width: 'auto', marginTop: 0 }} onClick={handleLogout}>
-          Log out
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          {profile?.role === 'teacher' && (
+            <a href="/inbox" style={{ fontSize: 14 }}>
+              Ungraded work
+            </a>
+          )}
+          <button style={{ width: 'auto', marginTop: 0 }} onClick={handleLogout}>
+            Log out
+          </button>
+        </div>
       </div>
 
       {error && <p className="error-text">{error}</p>}
@@ -302,34 +309,4 @@ export default function DashboardPage() {
       )}
 
       {profile?.role === 'student' && (
-        <div className="page" style={{ margin: '0 0 24px 0', maxWidth: 'none' }}>
-          <h1 style={{ fontSize: 16 }}>Join a class</h1>
-          <form onSubmit={handleJoinClass}>
-            <label>Class code</label>
-            <input
-              value={joinCode}
-              onChange={(e) => setJoinCode(e.target.value)}
-              placeholder="e.g. k3f9pqz"
-              required
-            />
-            <button type="submit" disabled={joining}>
-              {joining ? 'Joining...' : 'Join class'}
-            </button>
-          </form>
-        </div>
-      )}
-
-      <h1 style={{ fontSize: 16 }}>Your classes</h1>
-      {classes.length === 0 && <p className="subtitle">No classes yet.</p>}
-      {classes.map((c) => (
-        <div key={c.id} className="class-card" onClick={() => router.push(`/class/${c.id}`)}>
-          <h3>
-            {c.name} {c.google_course_id && <span style={{ fontSize: 12, color: '#6b7280' }}>(from Google Classroom)</span>}
-          </h3>
-          <p style={{ margin: '0 0 8px 0', color: '#6b7280' }}>{c.subject}</p>
-          {profile?.role === 'teacher' && !c.google_course_id && <p className="code">Join code: {c.join_code}</p>}
-        </div>
-      ))}
-    </div>
-  );
-}
+        <div
