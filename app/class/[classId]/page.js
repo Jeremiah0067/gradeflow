@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { supabase } from '../../../lib/supabaseClient';
 
-const emptyCriterion = () => ({ label: '', maxPoints: '' });
+const emptyCriterion = () => ({ label: '', maxPoints: '', description: '' });
 
 export default function ClassPage() {
   const router = useRouter();
@@ -25,6 +25,11 @@ export default function ClassPage() {
   const [criteria, setCriteria] = useState([emptyCriterion()]);
 
   const [extracting, setExtracting] = useState(false);
+
+  const [attachmentFile, setAttachmentFile] = useState(null);
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
+
+  const [extractingRubric, setExtractingRubric] = useState(false);
 
   useEffect(() => {
     loadClass();
@@ -106,6 +111,45 @@ export default function ClassPage() {
     setInstructions(data.extractedText);
   }
 
+  async function handleRubricDocumentUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setExtractingRubric(true);
+    setError('');
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData?.session?.access_token;
+    const fileBase64 = await fileToBase64(file);
+
+    const res = await fetch('/api/extract-rubric', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ mimeType: file.type, fileBase64 }),
+    });
+
+    const data = await res.json();
+    setExtractingRubric(false);
+
+    if (!res.ok) {
+      setError(data.error || 'Failed to extract rubric from the document.');
+      return;
+    }
+
+    if (!data.criteria || data.criteria.length === 0) {
+      setError('No rubric criteria were found in that document.');
+      return;
+    }
+
+    setCriteria(
+      data.criteria.map((c) => ({
+        label: c.criterion_title || '',
+        maxPoints: c.max_points || '',
+        description: c.description || '',
+      }))
+    );
+  }
+
   function updateCriterion(index, field, value) {
     setCriteria((prev) => prev.map((c, i) => (i === index ? { ...c, [field]: value } : c)));
   }
@@ -135,6 +179,22 @@ export default function ClassPage() {
 
     const maxPoints = type === 'quiz' ? 0 : rubricTotal;
 
+    let attachmentUrl = null;
+    if (attachmentFile) {
+      setUploadingAttachment(true);
+      const path = `${classId}/${Date.now()}-${attachmentFile.name}`;
+      const { error: uploadError } = await supabase.storage.from('assignment-files').upload(path, attachmentFile);
+      setUploadingAttachment(false);
+
+      if (uploadError) {
+        setError(`Failed to upload attachment: ${uploadError.message}`);
+        setCreating(false);
+        return;
+      }
+      const { data: publicUrlData } = supabase.storage.from('assignment-files').getPublicUrl(path);
+      attachmentUrl = publicUrlData.publicUrl;
+    }
+
     const { data: assignment, error: insertError } = await supabase
       .from('assignments')
       .insert({
@@ -144,6 +204,7 @@ export default function ClassPage() {
         type,
         max_points: maxPoints,
         due_date: dueDate ? new Date(dueDate).toISOString() : null,
+        attachment_url: attachmentUrl,
       })
       .select()
       .single();
@@ -158,6 +219,7 @@ export default function ClassPage() {
       const criteriaRows = validCriteria.map((c, i) => ({
         assignment_id: assignment.id,
         label: c.label.trim(),
+        description: c.description || null,
         max_points: Number(c.maxPoints),
         sort_order: i,
       }));
@@ -177,6 +239,7 @@ export default function ClassPage() {
     setInstructions('');
     setDueDate('');
     setCriteria([emptyCriterion()]);
+    setAttachmentFile(null);
     loadClass();
   }
 
@@ -235,6 +298,14 @@ export default function ClassPage() {
             <label>Due date (optional)</label>
             <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
 
+            <label>Attachment (optional - shown to students above their submission box)</label>
+            <input
+              type="file"
+              accept="application/pdf,.doc,.docx,image/*"
+              onChange={(e) => setAttachmentFile(e.target.files?.[0] || null)}
+            />
+            {uploadingAttachment && <p className="subtitle" style={{ marginTop: 4 }}>Uploading attachment...</p>}
+
             {type === 'quiz' ? (
               <p className="subtitle" style={{ marginTop: 16 }}>
                 Quiz questions aren&apos;t built into this form yet — add them via Supabase&apos;s{' '}
@@ -243,35 +314,54 @@ export default function ClassPage() {
             ) : (
               <>
                 <label>Rubric</label>
+                <p className="subtitle" style={{ marginTop: 0, marginBottom: 6 }}>
+                  Or upload an existing rubric document and let AI fill in the rows below:
+                </p>
+                <input
+                  type="file"
+                  accept="application/pdf,image/*"
+                  onChange={handleRubricDocumentUpload}
+                  disabled={extractingRubric}
+                  style={{ marginBottom: 10 }}
+                />
+                {extractingRubric && <p className="subtitle">Extracting rubric...</p>}
                 {criteria.map((c, i) => (
-                  <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'flex-start' }}>
+                  <div key={i} style={{ marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid #f3f4f6' }}>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                      <input
+                        style={{ flex: 3 }}
+                        placeholder="Criterion, e.g. Names both required inputs"
+                        value={c.label}
+                        onChange={(e) => updateCriterion(i, 'label', e.target.value)}
+                      />
+                      <input
+                        style={{ flex: 1 }}
+                        type="number"
+                        min={1}
+                        placeholder="Pts"
+                        value={c.maxPoints}
+                        onChange={(e) => updateCriterion(i, 'maxPoints', e.target.value)}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeCriterion(i)}
+                        style={{
+                          width: 'auto',
+                          marginTop: 0,
+                          background: '#fee2e2',
+                          color: '#b91c1c',
+                          padding: '10px 12px',
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
                     <input
-                      style={{ flex: 3 }}
-                      placeholder="Criterion, e.g. Names both required inputs"
-                      value={c.label}
-                      onChange={(e) => updateCriterion(i, 'label', e.target.value)}
+                      placeholder="Description (optional)"
+                      value={c.description || ''}
+                      onChange={(e) => updateCriterion(i, 'description', e.target.value)}
+                      style={{ marginTop: 6, fontSize: 13 }}
                     />
-                    <input
-                      style={{ flex: 1 }}
-                      type="number"
-                      min={1}
-                      placeholder="Pts"
-                      value={c.maxPoints}
-                      onChange={(e) => updateCriterion(i, 'maxPoints', e.target.value)}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => removeCriterion(i)}
-                      style={{
-                        width: 'auto',
-                        marginTop: 0,
-                        background: '#fee2e2',
-                        color: '#b91c1c',
-                        padding: '10px 12px',
-                      }}
-                    >
-                      ×
-                    </button>
                   </div>
                 ))}
                 <button
