@@ -4,6 +4,13 @@ import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { supabase } from '../../../../../lib/supabaseClient';
 
+function totalFor(rubricScores) {
+  return (rubricScores || []).reduce(
+    (sum, s) => sum + Number(s.teacher_override_points ?? s.ai_awarded_points ?? 0),
+    0
+  );
+}
+
 export default function AssignmentPage() {
   const router = useRouter();
   const { classId, assignmentId } = useParams();
@@ -17,6 +24,9 @@ export default function AssignmentPage() {
 
   const [answerText, setAnswerText] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  const [overrideDrafts, setOverrideDrafts] = useState({});
+  const [savingOverrideId, setSavingOverrideId] = useState(null);
 
   useEffect(() => {
     load();
@@ -102,6 +112,43 @@ export default function AssignmentPage() {
     load();
   }
 
+  function draftValueFor(score) {
+    if (score.id in overrideDrafts) return overrideDrafts[score.id];
+    return score.teacher_override_points ?? score.ai_awarded_points ?? '';
+  }
+
+  function handleOverrideChange(scoreId, value) {
+    setOverrideDrafts((prev) => ({ ...prev, [scoreId]: value }));
+  }
+
+  async function saveOverride(score) {
+    setSavingOverrideId(score.id);
+    setError('');
+
+    const value = overrideDrafts[score.id];
+    const numeric = value === '' ? null : Number(value);
+
+    const { error: updateError } = await supabase
+      .from('rubric_scores')
+      .update({ teacher_override_points: numeric })
+      .eq('id', score.id);
+
+    setSavingOverrideId(null);
+
+    if (updateError) {
+      setError(updateError.message);
+      return;
+    }
+
+    setOverrideDrafts((prev) => {
+      const next = { ...prev };
+      delete next[score.id];
+      return next;
+    });
+
+    load();
+  }
+
   if (loading) {
     return (
       <div className="page-wide">
@@ -117,6 +164,7 @@ export default function AssignmentPage() {
           <h1>{assignment?.title}</h1>
           <p className="subtitle" style={{ marginBottom: 0 }}>
             {assignment?.type} · {assignment?.max_points} pts
+            {assignment?.due_date && ` · due ${new Date(assignment.due_date).toLocaleDateString()}`}
           </p>
         </div>
         <button style={{ width: 'auto', marginTop: 0 }} onClick={() => router.push(`/class/${classId}`)}>
@@ -148,7 +196,11 @@ export default function AssignmentPage() {
             <>
               <h1 style={{ fontSize: 16 }}>Your submission</h1>
               <p style={{ whiteSpace: 'pre-wrap' }}>{mySubmission.raw_content?.text}</p>
-              <span className={`badge badge-${mySubmission.status === 'graded' || mySubmission.status === 'returned' ? 'graded' : 'flagged'}`}>
+              <span
+                className={`badge badge-${
+                  mySubmission.status === 'graded' || mySubmission.status === 'returned' ? 'graded' : 'flagged'
+                }`}
+              >
                 {mySubmission.status}
               </span>
               {mySubmission.rubric_scores?.length > 0 && (
@@ -158,6 +210,9 @@ export default function AssignmentPage() {
                       {s.ai_reasoning} — {s.teacher_override_points ?? s.ai_awarded_points} pts
                     </p>
                   ))}
+                  <p style={{ fontWeight: 600, marginTop: 12 }}>
+                    Total: {totalFor(mySubmission.rubric_scores)} / {assignment.max_points}
+                  </p>
                 </div>
               )}
             </>
@@ -196,19 +251,56 @@ export default function AssignmentPage() {
           <h1 style={{ fontSize: 16 }}>Submissions ({allSubmissions.length})</h1>
           {allSubmissions.length === 0 && <p className="subtitle">No submissions yet.</p>}
           {allSubmissions.map((s) => (
-            <div key={s.id} style={{ borderBottom: '1px solid #e5e7eb', padding: '12px 0' }}>
+            <div key={s.id} style={{ borderBottom: '1px solid #e5e7eb', padding: '16px 0' }}>
               <p style={{ margin: '0 0 4px 0', fontWeight: 600 }}>{s.users?.name}</p>
               <p style={{ margin: '0 0 8px 0', whiteSpace: 'pre-wrap', fontSize: 14 }}>{s.raw_content?.text}</p>
-              <span className={`badge badge-${s.status === 'graded' || s.status === 'returned' ? 'graded' : 'flagged'}`}>
+              <span
+                className={`badge badge-${
+                  s.status === 'graded' || s.status === 'returned' ? 'graded' : 'flagged'
+                }`}
+              >
                 {s.status}
               </span>
+
               {s.rubric_scores?.length > 0 && (
-                <div style={{ marginTop: 8 }}>
-                  {s.rubric_scores.map((rs) => (
-                    <p key={rs.id} style={{ margin: '4px 0', fontSize: 13 }}>
-                      {rs.ai_reasoning} — {rs.teacher_override_points ?? rs.ai_awarded_points} pts
-                    </p>
-                  ))}
+                <div style={{ marginTop: 12 }}>
+                  {s.rubric_scores.map((score) => {
+                    const overridden = score.teacher_override_points !== null && score.teacher_override_points !== undefined;
+                    return (
+                      <div
+                        key={score.id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 10,
+                          marginBottom: 8,
+                          fontSize: 13,
+                        }}
+                      >
+                        <div style={{ flex: 1 }}>
+                          <span style={{ color: overridden ? '#92400e' : 'inherit' }}>{score.ai_reasoning}</span>
+                          <span style={{ color: '#6b7280' }}> (AI gave {score.ai_awarded_points} pts)</span>
+                        </div>
+                        <input
+                          type="number"
+                          value={draftValueFor(score)}
+                          onChange={(e) => handleOverrideChange(score.id, e.target.value)}
+                          style={{ width: 64, padding: '6px 8px', margin: 0 }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => saveOverride(score)}
+                          disabled={savingOverrideId === score.id}
+                          style={{ width: 'auto', margin: 0, padding: '6px 10px', fontSize: 12 }}
+                        >
+                          {savingOverrideId === score.id ? 'Saving...' : 'Save'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                  <p style={{ fontWeight: 600, marginTop: 8 }}>
+                    Total: {totalFor(s.rubric_scores)} / {assignment.max_points}
+                  </p>
                 </div>
               )}
             </div>
