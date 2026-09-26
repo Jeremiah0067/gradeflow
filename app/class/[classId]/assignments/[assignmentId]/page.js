@@ -25,6 +25,12 @@ export default function AssignmentPage() {
   const [answerText, setAnswerText] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
+  // Handwritten upload state
+  const [imageFile, setImageFile] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
+  const [handwrittenResult, setHandwrittenResult] = useState(null);
+
+  // Teacher override state: { [rubricScoreId]: draftValue }
   const [overrideDrafts, setOverrideDrafts] = useState({});
   const [savingOverrideId, setSavingOverrideId] = useState(null);
 
@@ -109,6 +115,59 @@ export default function AssignmentPage() {
       return;
     }
 
+    load();
+  }
+
+  function handleImageSelect(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImageFile(file);
+    setImagePreview(URL.createObjectURL(file));
+  }
+
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.split(',')[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function handleHandwrittenSubmit(e) {
+    e.preventDefault();
+    if (!imageFile) return;
+
+    setSubmitting(true);
+    setError('');
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData?.session?.access_token;
+
+    const imageBase64 = await fileToBase64(imageFile);
+
+    const res = await fetch('/api/grade-handwritten', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        assignmentId,
+        mimeType: imageFile.type,
+        imageBase64,
+      }),
+    });
+
+    const data = await res.json();
+    setSubmitting(false);
+
+    if (!res.ok) {
+      setError(data.error || 'Failed to submit and grade.');
+      return;
+    }
+
+    setHandwrittenResult(data);
     load();
   }
 
@@ -236,12 +295,68 @@ export default function AssignmentPage() {
         </div>
       )}
 
-      {profile?.role === 'student' && assignment?.type !== 'typed' && (
+      {profile?.role === 'student' && assignment?.type === 'handwritten' && (
+        <div className="page" style={{ margin: 0, maxWidth: 'none' }}>
+          {mySubmission ? (
+            <>
+              <h1 style={{ fontSize: 16 }}>Your submission</h1>
+              <span
+                className={`badge badge-${
+                  mySubmission.status === 'graded' || mySubmission.status === 'returned' ? 'graded' : 'flagged'
+                }`}
+              >
+                {mySubmission.status}
+              </span>
+              {mySubmission.status === 'flagged' && (
+                <p className="subtitle" style={{ marginTop: 12 }}>
+                  This submission needs your teacher to review it manually before a grade is shown.
+                </p>
+              )}
+              {mySubmission.rubric_scores?.length > 0 && (
+                <div style={{ marginTop: 16 }}>
+                  {mySubmission.rubric_scores.map((s) => (
+                    <p key={s.id} style={{ margin: '4px 0', fontSize: 14 }}>
+                      {s.ai_reasoning} — {s.teacher_override_points ?? s.ai_awarded_points} pts
+                    </p>
+                  ))}
+                  <p style={{ fontWeight: 600, marginTop: 12 }}>
+                    Total: {totalFor(mySubmission.rubric_scores)} / {assignment.max_points}
+                  </p>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <h1 style={{ fontSize: 16 }}>Upload your answer</h1>
+              <p className="subtitle">Take a photo or upload an image of your handwritten answer.</p>
+              <form onSubmit={handleHandwrittenSubmit}>
+                <input type="file" accept="image/*" onChange={handleImageSelect} required />
+                {imagePreview && (
+                  <img
+                    src={imagePreview}
+                    alt="Preview of your handwritten answer"
+                    style={{ maxWidth: '100%', marginTop: 12, borderRadius: 8, border: '1px solid #e5e7eb' }}
+                  />
+                )}
+                <button type="submit" disabled={submitting || !imageFile}>
+                  {submitting ? 'Transcribing and grading...' : 'Submit'}
+                </button>
+              </form>
+              {handwrittenResult?.flagged && (
+                <p className="error-text" style={{ marginTop: 12 }}>
+                  {handwrittenResult.message}
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {profile?.role === 'student' && assignment?.type === 'quiz' && (
         <div className="page" style={{ margin: 0, maxWidth: 'none' }}>
           <p className="subtitle">
-            This assignment type ({assignment?.type}) isn&apos;t wired up in this starter yet — typed answers are
-            the first working submission flow. Handwritten photo upload and quiz types are the next pieces to
-            build.
+            Quiz-taking isn&apos;t wired up in this starter yet — question building and deterministic grading are
+            the next piece to build.
           </p>
         </div>
       )}
