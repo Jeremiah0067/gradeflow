@@ -11,6 +11,10 @@ function totalFor(rubricScores) {
   );
 }
 
+function isVisibleToStudent(status) {
+  return status === 'published';
+}
+
 export default function AssignmentPage() {
   const router = useRouter();
   const { classId, assignmentId } = useParams();
@@ -25,12 +29,9 @@ export default function AssignmentPage() {
   const [answerText, setAnswerText] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  // Handwritten upload state
   const [imageFile, setImageFile] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
-  const [handwrittenResult, setHandwrittenResult] = useState(null);
 
-  // Teacher override state: { [rubricScoreId]: draftValue }
   const [overrideDrafts, setOverrideDrafts] = useState({});
   const [savingOverrideId, setSavingOverrideId] = useState(null);
 
@@ -87,31 +88,28 @@ export default function AssignmentPage() {
     setLoading(false);
   }
 
+  // Typed answer: insert directly, status pending_ai_review. A Supabase
+  // Database Webhook (configured in the dashboard, not in code) calls
+  // /api/process-grading asynchronously - this returns instantly.
   async function handleSubmit(e) {
     e.preventDefault();
     setSubmitting(true);
     setError('');
 
     const { data: sessionData } = await supabase.auth.getSession();
-    const token = sessionData?.session?.access_token;
+    const userId = sessionData.session.user.id;
 
-    const res = await fetch('/api/grade', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        assignmentId,
-        answerText,
-      }),
+    const { error: insertError } = await supabase.from('submissions').insert({
+      assignment_id: assignmentId,
+      student_id: userId,
+      status: 'pending_ai_review',
+      raw_content: { text: answerText },
     });
 
-    const data = await res.json();
     setSubmitting(false);
 
-    if (!res.ok) {
-      setError(data.error || 'Failed to submit and grade.');
+    if (insertError) {
+      setError(insertError.message);
       return;
     }
 
@@ -125,15 +123,9 @@ export default function AssignmentPage() {
     setImagePreview(URL.createObjectURL(file));
   }
 
-  function fileToBase64(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result.split(',')[1]);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-  }
-
+  // Handwritten: upload the image to the private "submissions" storage
+  // bucket, then insert a row referencing its path. Grading happens later
+  // via the same async webhook pipeline.
   async function handleHandwrittenSubmit(e) {
     e.preventDefault();
     if (!imageFile) return;
@@ -142,32 +134,31 @@ export default function AssignmentPage() {
     setError('');
 
     const { data: sessionData } = await supabase.auth.getSession();
-    const token = sessionData?.session?.access_token;
+    const userId = sessionData.session.user.id;
 
-    const imageBase64 = await fileToBase64(imageFile);
+    const path = `${userId}/${assignmentId}-${Date.now()}-${imageFile.name}`;
+    const { error: uploadError } = await supabase.storage.from('submissions').upload(path, imageFile);
 
-    const res = await fetch('/api/grade-handwritten', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        assignmentId,
-        mimeType: imageFile.type,
-        imageBase64,
-      }),
-    });
-
-    const data = await res.json();
-    setSubmitting(false);
-
-    if (!res.ok) {
-      setError(data.error || 'Failed to submit and grade.');
+    if (uploadError) {
+      setSubmitting(false);
+      setError(uploadError.message);
       return;
     }
 
-    setHandwrittenResult(data);
+    const { error: insertError } = await supabase.from('submissions').insert({
+      assignment_id: assignmentId,
+      student_id: userId,
+      status: 'pending_ai_review',
+      raw_content: { image_path: path, mime_type: imageFile.type },
+    });
+
+    setSubmitting(false);
+
+    if (insertError) {
+      setError(insertError.message);
+      return;
+    }
+
     load();
   }
 
@@ -208,6 +199,18 @@ export default function AssignmentPage() {
     load();
   }
 
+  async function handlePublish(submissionId) {
+    await supabase.from('submissions').update({ status: 'published' }).eq('id', submissionId);
+    load();
+  }
+
+  function statusLabel(status) {
+    if (status === 'pending_ai_review') return 'submitted - waiting on AI grading';
+    if (status === 'needs_teacher_approval') return 'AI graded - awaiting teacher approval';
+    if (status === 'published') return 'graded';
+    return status;
+  }
+
   if (loading) {
     return (
       <div className="page-wide">
@@ -237,13 +240,34 @@ export default function AssignmentPage() {
         <h1 style={{ fontSize: 16 }}>Instructions</h1>
         <p>{assignment?.instructions || 'No instructions provided.'}</p>
 
+        {assignment?.attachment_url && (
+          <div style={{ marginTop: 16 }}>
+            <iframe
+              src={assignment.attachment_url}
+              title="Assignment attachment"
+              style={{ width: '100%', height: 500, border: '1px solid #e5e7eb', borderRadius: 8 }}
+            />
+            <p className="subtitle" style={{ marginTop: 6 }}>
+              <a href={assignment.attachment_url} target="_blank" rel="noreferrer">
+                Open attachment in a new tab
+              </a>{' '}
+              if it doesn&apos;t display correctly above.
+            </p>
+          </div>
+        )}
+
         {assignment?.rubric_criteria?.length > 0 && (
           <>
             <h1 style={{ fontSize: 16, marginTop: 20 }}>Rubric</h1>
             {assignment.rubric_criteria.map((c) => (
-              <p key={c.id} style={{ margin: '4px 0' }}>
-                {c.label} — {c.max_points} pts
-              </p>
+              <div key={c.id} style={{ margin: '4px 0' }}>
+                <p style={{ margin: 0 }}>
+                  {c.label} — {c.max_points} pts
+                </p>
+                {c.description && (
+                  <p style={{ margin: 0, fontSize: 13, color: '#6b7280' }}>{c.description}</p>
+                )}
+              </div>
             ))}
           </>
         )}
@@ -255,14 +279,10 @@ export default function AssignmentPage() {
             <>
               <h1 style={{ fontSize: 16 }}>Your submission</h1>
               <p style={{ whiteSpace: 'pre-wrap' }}>{mySubmission.raw_content?.text}</p>
-              <span
-                className={`badge badge-${
-                  mySubmission.status === 'graded' || mySubmission.status === 'returned' ? 'graded' : 'flagged'
-                }`}
-              >
-                {mySubmission.status}
+              <span className={`badge badge-${isVisibleToStudent(mySubmission.status) ? 'graded' : 'flagged'}`}>
+                {statusLabel(mySubmission.status)}
               </span>
-              {mySubmission.rubric_scores?.length > 0 && (
+              {isVisibleToStudent(mySubmission.status) && mySubmission.rubric_scores?.length > 0 && (
                 <div style={{ marginTop: 16 }}>
                   {mySubmission.rubric_scores.map((s) => (
                     <p key={s.id} style={{ margin: '4px 0', fontSize: 14 }}>
@@ -273,6 +293,11 @@ export default function AssignmentPage() {
                     Total: {totalFor(mySubmission.rubric_scores)} / {assignment.max_points}
                   </p>
                 </div>
+              )}
+              {!isVisibleToStudent(mySubmission.status) && (
+                <p className="subtitle" style={{ marginTop: 12 }}>
+                  Your grade will appear here once your teacher reviews and publishes it.
+                </p>
               )}
             </>
           ) : (
@@ -287,7 +312,7 @@ export default function AssignmentPage() {
                   required
                 />
                 <button type="submit" disabled={submitting}>
-                  {submitting ? 'Submitting and grading...' : 'Submit'}
+                  {submitting ? 'Submitting...' : 'Submit'}
                 </button>
               </form>
             </>
@@ -300,19 +325,15 @@ export default function AssignmentPage() {
           {mySubmission ? (
             <>
               <h1 style={{ fontSize: 16 }}>Your submission</h1>
-              <span
-                className={`badge badge-${
-                  mySubmission.status === 'graded' || mySubmission.status === 'returned' ? 'graded' : 'flagged'
-                }`}
-              >
-                {mySubmission.status}
+              <span className={`badge badge-${isVisibleToStudent(mySubmission.status) ? 'graded' : 'flagged'}`}>
+                {statusLabel(mySubmission.status)}
               </span>
               {mySubmission.status === 'flagged' && (
                 <p className="subtitle" style={{ marginTop: 12 }}>
                   This submission needs your teacher to review it manually before a grade is shown.
                 </p>
               )}
-              {mySubmission.rubric_scores?.length > 0 && (
+              {isVisibleToStudent(mySubmission.status) && mySubmission.rubric_scores?.length > 0 && (
                 <div style={{ marginTop: 16 }}>
                   {mySubmission.rubric_scores.map((s) => (
                     <p key={s.id} style={{ margin: '4px 0', fontSize: 14 }}>
@@ -339,14 +360,9 @@ export default function AssignmentPage() {
                   />
                 )}
                 <button type="submit" disabled={submitting || !imageFile}>
-                  {submitting ? 'Transcribing and grading...' : 'Submit'}
+                  {submitting ? 'Uploading...' : 'Submit'}
                 </button>
               </form>
-              {handwrittenResult?.flagged && (
-                <p className="error-text" style={{ marginTop: 12 }}>
-                  {handwrittenResult.message}
-                </p>
-              )}
             </>
           )}
         </div>
@@ -369,12 +385,8 @@ export default function AssignmentPage() {
             <div key={s.id} style={{ borderBottom: '1px solid #e5e7eb', padding: '16px 0' }}>
               <p style={{ margin: '0 0 4px 0', fontWeight: 600 }}>{s.users?.name}</p>
               <p style={{ margin: '0 0 8px 0', whiteSpace: 'pre-wrap', fontSize: 14 }}>{s.raw_content?.text}</p>
-              <span
-                className={`badge badge-${
-                  s.status === 'graded' || s.status === 'returned' ? 'graded' : 'flagged'
-                }`}
-              >
-                {s.status}
+              <span className={`badge badge-${s.status === 'published' ? 'graded' : 'flagged'}`}>
+                {statusLabel(s.status)}
               </span>
 
               {s.rubric_scores?.length > 0 && (
@@ -384,13 +396,7 @@ export default function AssignmentPage() {
                     return (
                       <div
                         key={score.id}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 10,
-                          marginBottom: 8,
-                          fontSize: 13,
-                        }}
+                        style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, fontSize: 13 }}
                       >
                         <div style={{ flex: 1 }}>
                           <span style={{ color: overridden ? '#92400e' : 'inherit' }}>{score.ai_reasoning}</span>
@@ -417,6 +423,12 @@ export default function AssignmentPage() {
                     Total: {totalFor(s.rubric_scores)} / {assignment.max_points}
                   </p>
                 </div>
+              )}
+
+              {s.status === 'needs_teacher_approval' && (
+                <button type="button" onClick={() => handlePublish(s.id)} style={{ marginTop: 10, width: 'auto' }}>
+                  Approve & publish
+                </button>
               )}
             </div>
           ))}
