@@ -139,10 +139,10 @@ export default function InboxPage() {
           {s.rubric_scores?.length > 0 && (
             <div style={{ marginTop: 8 }}>
               {s.rubric_scores.map((score) => (
-                <div key={score.id} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, fontSize: 13 }}>
+                <div key={score.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 10, fontSize: 13 }}>
                   <div style={{ flex: 1 }}>
-                    <span>{score.ai_reasoning}</span>
-                    <span style={{ color: '#6b7280' }}> (AI gave {score.ai_awarded_points} pts)</span>
+                    <p style={{ margin: 0 }}>{score.ai_reasoning}</p>
+                    <span style={{ color: '#6b7280', fontSize: 12 }}>Suggested: {score.ai_awarded_points} pts</span>
                   </div>
                   <input
                     type="number"
