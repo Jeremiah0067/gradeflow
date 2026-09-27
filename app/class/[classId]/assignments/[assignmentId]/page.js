@@ -88,8 +88,6 @@ export default function AssignmentPage() {
     setLoading(false);
   }
 
-  // Typed answer: insert directly, status pending_ai_review, then fire off
-  // grading without waiting for it - the student sees "submitted" instantly.
   async function handleSubmit(e) {
     e.preventDefault();
     setSubmitting(true);
@@ -132,8 +130,6 @@ export default function AssignmentPage() {
     setImagePreview(URL.createObjectURL(file));
   }
 
-  // Handwritten: upload the image, insert a row referencing its path, then
-  // fire off grading the same fire-and-forget way as the typed path above.
   async function handleHandwrittenSubmit(e) {
     e.preventDefault();
     if (!imageFile) return;
@@ -414,11 +410,11 @@ export default function AssignmentPage() {
                     return (
                       <div
                         key={score.id}
-                        style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, fontSize: 13 }}
+                        style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 10, fontSize: 13 }}
                       >
                         <div style={{ flex: 1 }}>
-                          <span style={{ color: overridden ? '#92400e' : 'inherit' }}>{score.ai_reasoning}</span>
-                          <span style={{ color: '#6b7280' }}> (AI gave {score.ai_awarded_points} pts)</span>
+                          <p style={{ margin: 0, color: overridden ? '#92400e' : 'inherit' }}>{score.ai_reasoning}</p>
+                          <span style={{ color: '#6b7280', fontSize: 12 }}>Suggested: {score.ai_awarded_points} pts</span>
                         </div>
                         <input
                           type="number"
