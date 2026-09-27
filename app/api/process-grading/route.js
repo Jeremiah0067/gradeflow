@@ -84,16 +84,27 @@ If illegible, write [illegible]. Respond ONLY with JSON: { "transcript": "...", 
       transcript = submission.raw_content?.text;
     }
 
-    const gradePrompt = `Grade this student answer against the rubric below.
+    const gradePrompt = `You are grading a student's answer and writing feedback directly TO the student.
+
 Rubric:
 ${rubricList || 'No rubric set. Score out of 100.'}
 
-Answer:
+Student's answer:
 """
 ${transcript}
 """
 
-Respond ONLY with JSON: { "criteria": [{ "id": "...", "awarded": number, "reasoning": "one sentence" }] }`;
+For each criterion, write feedback speaking directly to the student in second person ("you"),
+warm and encouraging even when pointing out what's missing. Do not restate the criterion's
+definition back at them like a checklist item - instead:
+- If they got it right, briefly say what they did well and why it worked
+- If they got it partly right, acknowledge what's there, then tell them specifically what to
+  add or fix to earn full points next time
+- If they missed it entirely, tell them plainly what's missing and give one concrete tip for
+  how to include it
+Keep each one to 1-2 sentences, specific to what THEY actually wrote, not generic.
+
+Respond ONLY with JSON: { "criteria": [{ "id": "...", "awarded": number, "reasoning": "feedback written directly to the student" }] }`;
 
     const graded = await callGemini(apiKey, [{ text: gradePrompt }]);
 
