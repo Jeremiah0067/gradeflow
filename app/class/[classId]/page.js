@@ -24,8 +24,6 @@ export default function ClassPage() {
 
   const [criteria, setCriteria] = useState([emptyCriterion()]);
 
-  const [extracting, setExtracting] = useState(false);
-
   const [attachmentFile, setAttachmentFile] = useState(null);
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
 
@@ -79,38 +77,6 @@ export default function ClassPage() {
     });
   }
 
-  async function handleDocumentUpload(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    setExtracting(true);
-    setError('');
-
-    const { data: sessionData } = await supabase.auth.getSession();
-    const token = sessionData?.session?.access_token;
-
-    const fileBase64 = await fileToBase64(file);
-
-    const res = await fetch('/api/extract-document-text', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ mimeType: file.type, fileBase64 }),
-    });
-
-    const data = await res.json();
-    setExtracting(false);
-
-    if (!res.ok) {
-      setError(data.error || 'Failed to extract text from the document.');
-      return;
-    }
-
-    setInstructions(data.extractedText);
-  }
-
   async function handleRubricDocumentUpload(e) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -160,6 +126,13 @@ export default function ClassPage() {
 
   function removeCriterion(index) {
     setCriteria((prev) => (prev.length === 1 ? prev : prev.filter((_, i) => i !== index)));
+  }
+
+  async function handleDeleteAssignment(e, assignmentId) {
+    e.stopPropagation();
+    if (!confirm('Delete this assignment? This also deletes all its submissions and grades. This cannot be undone.')) return;
+    await supabase.from('assignments').delete().eq('id', assignmentId);
+    loadClass();
   }
 
   const rubricTotal = criteria.reduce((sum, c) => sum + (Number(c.maxPoints) || 0), 0);
@@ -264,6 +237,16 @@ export default function ClassPage() {
             ← Dashboard
           </button>
         </div>
+        {profile?.role === 'teacher' && (
+          <button
+            type="button"
+            className="btn-secondary"
+            style={{ width: 'auto', margin: 0, padding: '8px 14px' }}
+            onClick={() => router.push(`/class/${classId}/people`)}
+          >
+            People
+          </button>
+        )}
       </div>
 
       <h1>{klass?.name}</h1>
@@ -282,17 +265,17 @@ export default function ClassPage() {
 
             <label>Instructions</label>
             <textarea rows={3} value={instructions} onChange={(e) => setInstructions(e.target.value)} />
-            <p className="subtitle" style={{ marginTop: 4, marginBottom: 0 }}>
-              Or upload a document (PDF or image) to fill this in automatically:
-            </p>
+
+            <label>Attachment (optional - students can view this file on the assignment page)</label>
             <input
               type="file"
-              accept="application/pdf,image/*"
-              onChange={handleDocumentUpload}
-              disabled={extracting}
-              style={{ marginTop: 6 }}
+              accept="application/pdf,.doc,.docx,image/*"
+              onChange={(e) => setAttachmentFile(e.target.files?.[0] || null)}
             />
-            {extracting && <p className="subtitle" style={{ marginTop: 4 }}>Extracting text...</p>}
+            {attachmentFile && (
+              <p className="subtitle" style={{ marginTop: 4, marginBottom: 0 }}>Selected: {attachmentFile.name}</p>
+            )}
+            {uploadingAttachment && <p className="subtitle" style={{ marginTop: 4 }}>Uploading attachment...</p>}
 
             <label>Type</label>
             <select value={type} onChange={(e) => setType(e.target.value)}>
@@ -303,14 +286,6 @@ export default function ClassPage() {
 
             <label>Due date (optional)</label>
             <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
-
-            <label>Attachment (optional - shown to students above their submission box)</label>
-            <input
-              type="file"
-              accept="application/pdf,.doc,.docx,image/*"
-              onChange={(e) => setAttachmentFile(e.target.files?.[0] || null)}
-            />
-            {uploadingAttachment && <p className="subtitle" style={{ marginTop: 4 }}>Uploading attachment...</p>}
 
             {type === 'quiz' ? (
               <p className="subtitle" style={{ marginTop: 16 }}>
@@ -401,13 +376,23 @@ export default function ClassPage() {
             onClick={() => router.push(`/class/${classId}/assignments/${a.id}`)}
           >
             <div className="assignment-icon">{icon}</div>
-            <div>
+            <div style={{ flex: 1 }}>
               <p className="assignment-row-title">{a.title}</p>
               <p className="assignment-row-meta">
                 {a.type} · {a.max_points} pts
                 {a.due_date && ` · due ${new Date(a.due_date).toLocaleDateString()}`}
               </p>
             </div>
+            {profile?.role === 'teacher' && (
+              <button
+                type="button"
+                className="btn-danger"
+                style={{ width: 'auto', margin: 0, padding: '6px 12px', fontSize: 12 }}
+                onClick={(e) => handleDeleteAssignment(e, a.id)}
+              >
+                Delete
+              </button>
+            )}
           </div>
         );
       })}
