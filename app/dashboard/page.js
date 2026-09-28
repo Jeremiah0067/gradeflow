@@ -62,14 +62,24 @@ export default function DashboardPage() {
     setProfile(profileData);
 
     if (profileData.role === 'teacher') {
-      const { data: teacherClasses, error: classErr } = await supabase
+      const { data: ownedClasses, error: classErr } = await supabase
         .from('classes')
         .select('*')
         .eq('teacher_id', userId)
         .order('created_at', { ascending: false });
 
       if (classErr) setError(classErr.message);
-      setClasses(teacherClasses || []);
+
+      const { data: coTeacherRows } = await supabase
+        .from('class_teachers')
+        .select('classes(*)')
+        .eq('teacher_id', userId);
+
+      const coTaughtClasses = (coTeacherRows || []).map((r) => r.classes).filter(Boolean);
+
+      const mergedById = new Map();
+      [...(ownedClasses || []), ...coTaughtClasses].forEach((c) => mergedById.set(c.id, c));
+      setClasses(Array.from(mergedById.values()));
 
       const { data: googleAccount } = await supabase
         .from('google_accounts')
@@ -196,6 +206,19 @@ export default function DashboardPage() {
     }
 
     setJoinCode('');
+    loadDashboard();
+  }
+
+  async function handleDeleteClass(e, classId, isOwner) {
+    e.stopPropagation();
+    if (!isOwner) {
+      setError('Only the class owner can delete this class - ask them, or remove yourself from People instead.');
+      return;
+    }
+    if (!confirm('Delete this class? This also deletes all its assignments, submissions, and grades. This cannot be undone.')) {
+      return;
+    }
+    await supabase.from('classes').delete().eq('id', classId);
     loadDashboard();
   }
 
@@ -334,20 +357,37 @@ export default function DashboardPage() {
       <p className="section-heading">Your classes</p>
       {classes.length === 0 && <p className="subtitle">No classes yet.</p>}
       <div className="class-grid">
-        {classes.map((c) => (
-          <div key={c.id} className="class-card" onClick={() => router.push(`/class/${c.id}`)}>
-            <div className="class-card-banner" style={{ background: colorForClass(c.name) }}>
-              <h3>{c.name}</h3>
-              {c.subject && <p>{c.subject}</p>}
+        {classes.map((c) => {
+          const isOwner = profile?.role === 'teacher' && c.teacher_id === profile.id;
+          return (
+            <div key={c.id} className="class-card" onClick={() => router.push(`/class/${c.id}`)}>
+              <div className="class-card-banner" style={{ background: colorForClass(c.name) }}>
+                <h3>{c.name}</h3>
+                {c.subject && <p>{c.subject}</p>}
+              </div>
+              <div className="class-card-body">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    {c.google_course_id && <span className="tag">From Google Classroom</span>}
+                    {profile?.role === 'teacher' && !c.google_course_id && (
+                      <span className="code">Join code: {c.join_code}</span>
+                    )}
+                  </div>
+                  {profile?.role === 'teacher' && (
+                    <button
+                      type="button"
+                      className="btn-danger"
+                      style={{ width: 'auto', margin: 0, padding: '6px 10px', fontSize: 12 }}
+                      onClick={(e) => handleDeleteClass(e, c.id, isOwner)}
+                    >
+                      Delete
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
-            <div className="class-card-body">
-              {c.google_course_id && <span className="tag">From Google Classroom</span>}
-              {profile?.role === 'teacher' && !c.google_course_id && (
-                <span className="code">Join code: {c.join_code}</span>
-              )}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
