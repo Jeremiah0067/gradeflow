@@ -11,8 +11,34 @@ function totalFor(rubricScores) {
   );
 }
 
+function aiTotalFor(rubricScores) {
+  return (rubricScores || []).reduce((sum, s) => sum + Number(s.ai_awarded_points ?? 0), 0);
+}
+
+function avgConfidence(rubricScores) {
+  const withConf = (rubricScores || []).filter((s) => typeof s.ai_confidence === 'number');
+  if (withConf.length === 0) return null;
+  return withConf.reduce((sum, s) => sum + s.ai_confidence, 0) / withConf.length;
+}
+
+function confidenceClass(c) {
+  if (c === null) return '';
+  if (c >= 0.85) return 'confidence-high';
+  if (c >= 0.6) return 'confidence-medium';
+  return 'confidence-low';
+}
+
 function isVisibleToStudent(status) {
   return status === 'published';
+}
+
+function statusLabel(status) {
+  if (status === 'pending_ai_review') return 'Submitted';
+  if (status === 'needs_teacher_approval') return 'Awaiting teacher approval';
+  if (status === 'published') return 'Published';
+  if (status === 'needs_revision') return 'Needs revision';
+  if (status === 'flagged') return 'Flagged for review';
+  return status;
 }
 
 export default function AssignmentPage() {
@@ -20,6 +46,7 @@ export default function AssignmentPage() {
   const { classId, assignmentId } = useParams();
 
   const [profile, setProfile] = useState(null);
+  const [klass, setKlass] = useState(null);
   const [assignment, setAssignment] = useState(null);
   const [mySubmission, setMySubmission] = useState(null);
   const [allSubmissions, setAllSubmissions] = useState([]);
@@ -34,6 +61,8 @@ export default function AssignmentPage() {
 
   const [overrideDrafts, setOverrideDrafts] = useState({});
   const [savingOverrideId, setSavingOverrideId] = useState(null);
+  const [publishing, setPublishing] = useState(false);
+  const [selectedSubmissionId, setSelectedSubmissionId] = useState(null);
 
   useEffect(() => {
     load();
@@ -56,7 +85,7 @@ export default function AssignmentPage() {
 
     const { data: assignmentData, error: aErr } = await supabase
       .from('assignments')
-      .select('*, rubric_criteria(*)')
+      .select('*, rubric_criteria(*), classes(name)')
       .eq('id', assignmentId)
       .single();
 
@@ -66,6 +95,7 @@ export default function AssignmentPage() {
       return;
     }
     setAssignment(assignmentData);
+    setKlass(assignmentData.classes);
 
     if (profileData.role === 'student') {
       const { data: sub } = await supabase
@@ -83,6 +113,9 @@ export default function AssignmentPage() {
         .order('submitted_at', { ascending: false });
       if (subErr) setError(subErr.message);
       setAllSubmissions(subs || []);
+      if (subs && subs.length > 0) {
+        setSelectedSubmissionId((prev) => prev || subs[0].id);
+      }
     }
 
     setLoading(false);
@@ -214,15 +247,17 @@ export default function AssignmentPage() {
   }
 
   async function handlePublish(submissionId) {
+    setPublishing(true);
     await supabase.from('submissions').update({ status: 'published' }).eq('id', submissionId);
+    setPublishing(false);
     load();
   }
 
-  function statusLabel(status) {
-    if (status === 'pending_ai_review') return 'submitted - waiting on AI grading';
-    if (status === 'needs_teacher_approval') return 'AI graded - awaiting teacher approval';
-    if (status === 'published') return 'graded';
-    return status;
+  async function handleReturnForRevision(submissionId) {
+    setPublishing(true);
+    await supabase.from('submissions').update({ status: 'needs_revision' }).eq('id', submissionId);
+    setPublishing(false);
+    load();
   }
 
   if (loading) {
@@ -233,221 +268,321 @@ export default function AssignmentPage() {
     );
   }
 
+  const selectedSubmission = allSubmissions.find((s) => s.id === selectedSubmissionId) || allSubmissions[0];
+  const isTeacher = profile?.role === 'teacher';
+
   return (
-    <div className="page-wide">
-      <div className="top-bar">
-        <div>
-          <h1>{assignment?.title}</h1>
-          <p className="subtitle" style={{ marginBottom: 0 }}>
-            {assignment?.type} · {assignment?.max_points} pts
-            {assignment?.due_date && ` · due ${new Date(assignment.due_date).toLocaleDateString()}`}
-          </p>
+    <div className="layout-shell">
+      <aside className="sidebar">
+        <div className="sidebar-logo">
+          <div className="appbar-logo">G</div>
+          <span>GradeFlow</span>
         </div>
-        <button style={{ width: 'auto', marginTop: 0 }} onClick={() => router.push(`/class/${classId}`)}>
-          Back to class
-        </button>
-      </div>
+        <nav className="sidebar-nav">
+          <button type="button" className="sidebar-link" onClick={() => router.push('/dashboard')}>
+            <span className="sidebar-link-left">📊 Dashboard</span>
+          </button>
+          <button type="button" className="sidebar-link active" onClick={() => router.push(`/class/${classId}`)}>
+            <span className="sidebar-link-left">📚 Classes</span>
+          </button>
+          {isTeacher && (
+            <button type="button" className="sidebar-link" onClick={() => router.push('/inbox')}>
+              <span className="sidebar-link-left">📥 Inbox</span>
+            </button>
+          )}
+        </nav>
+        <div className="sidebar-footer">
+          <div className="avatar-chip">{profile?.name?.[0]?.toUpperCase() || '?'}</div>
+          <div className="sidebar-footer-info">
+            <p className="sidebar-footer-name">{profile?.name}</p>
+            <p className="sidebar-footer-role">{isTeacher ? 'Teacher' : 'Student'}</p>
+          </div>
+        </div>
+      </aside>
 
-      {error && <p className="error-text">{error}</p>}
+      <div className="main-content">
+        <p className="breadcrumb">
+          <a onClick={() => router.push('/dashboard')}>Classes</a> ›{' '}
+          <a onClick={() => router.push(`/class/${classId}`)}>{klass?.name}</a> › {assignment?.title}
+        </p>
 
-      <div className="page" style={{ margin: '0 0 24px 0', maxWidth: 'none' }}>
-        <h1 style={{ fontSize: 16 }}>Instructions</h1>
-        <p>{assignment?.instructions || 'No instructions provided.'}</p>
-
-        {assignment?.attachment_url && (
-          <div style={{ marginTop: 16 }}>
-            <iframe
-              src={assignment.attachment_url}
-              title="Assignment attachment"
-              style={{ width: '100%', height: 500, border: '1px solid #e5e7eb', borderRadius: 8 }}
-            />
-            <p className="subtitle" style={{ marginTop: 6 }}>
-              <a href={assignment.attachment_url} target="_blank" rel="noreferrer">
-                Open attachment in a new tab
-              </a>{' '}
-              if it doesn&apos;t display correctly above.
+        <div className="main-header">
+          <div>
+            <h1>{assignment?.title}</h1>
+            <p className="subtitle" style={{ marginBottom: 0 }}>
+              Due {assignment?.due_date ? new Date(assignment.due_date).toLocaleDateString() : '-'} ·{' '}
+              {assignment?.max_points} points
+              {isTeacher && ` · ${allSubmissions.length} submitted`}
             </p>
           </div>
-        )}
-
-        {assignment?.rubric_criteria?.length > 0 && (
-          <>
-            <h1 style={{ fontSize: 16, marginTop: 20 }}>Rubric</h1>
-            {assignment.rubric_criteria.map((c) => (
-              <div key={c.id} style={{ margin: '4px 0' }}>
-                <p style={{ margin: 0 }}>
-                  {c.label} — {c.max_points} pts
-                </p>
-                {c.description && (
-                  <p style={{ margin: 0, fontSize: 13, color: '#6b7280' }}>{c.description}</p>
-                )}
-              </div>
-            ))}
-          </>
-        )}
-      </div>
-
-      {profile?.role === 'student' && assignment?.type === 'typed' && (
-        <div className="page" style={{ margin: 0, maxWidth: 'none' }}>
-          {mySubmission ? (
-            <>
-              <h1 style={{ fontSize: 16 }}>Your submission</h1>
-              <p style={{ whiteSpace: 'pre-wrap' }}>{mySubmission.raw_content?.text}</p>
-              <span className={`badge badge-${isVisibleToStudent(mySubmission.status) ? 'graded' : 'flagged'}`}>
-                {statusLabel(mySubmission.status)}
-              </span>
-              {isVisibleToStudent(mySubmission.status) && mySubmission.rubric_scores?.length > 0 && (
-                <div style={{ marginTop: 16 }}>
-                  {mySubmission.rubric_scores.map((s) => (
-                    <p key={s.id} style={{ margin: '4px 0', fontSize: 14 }}>
-                      {s.ai_reasoning} — {s.teacher_override_points ?? s.ai_awarded_points} pts
-                    </p>
-                  ))}
-                  <p style={{ fontWeight: 600, marginTop: 12 }}>
-                    Total: {totalFor(mySubmission.rubric_scores)} / {assignment.max_points}
-                  </p>
-                </div>
-              )}
-              {!isVisibleToStudent(mySubmission.status) && (
-                <p className="subtitle" style={{ marginTop: 12 }}>
-                  Your grade will appear here once your teacher reviews and publishes it.
-                </p>
-              )}
-            </>
-          ) : (
-            <>
-              <h1 style={{ fontSize: 16 }}>Your answer</h1>
-              <form onSubmit={handleSubmit}>
-                <textarea
-                  rows={8}
-                  value={answerText}
-                  onChange={(e) => setAnswerText(e.target.value)}
-                  placeholder="Type your answer here..."
-                  required
-                />
-                <button type="submit" disabled={submitting}>
-                  {submitting ? 'Submitting...' : 'Submit'}
-                </button>
-              </form>
-            </>
-          )}
         </div>
-      )}
 
-      {profile?.role === 'student' && assignment?.type === 'handwritten' && (
-        <div className="page" style={{ margin: 0, maxWidth: 'none' }}>
-          {mySubmission ? (
-            <>
-              <h1 style={{ fontSize: 16 }}>Your submission</h1>
-              <span className={`badge badge-${isVisibleToStudent(mySubmission.status) ? 'graded' : 'flagged'}`}>
-                {statusLabel(mySubmission.status)}
-              </span>
-              {mySubmission.status === 'flagged' && (
-                <p className="subtitle" style={{ marginTop: 12 }}>
-                  This submission needs your teacher to review it manually before a grade is shown.
-                </p>
-              )}
-              {isVisibleToStudent(mySubmission.status) && mySubmission.rubric_scores?.length > 0 && (
+        {error && <p className="error-text">{error}</p>}
+
+        <div className="two-col">
+          <div>
+            <div className="surface">
+              <p className="section-heading">Instructions</p>
+              <p style={{ margin: 0 }}>{assignment?.instructions || 'No instructions provided.'}</p>
+
+              {assignment?.attachment_url && (
                 <div style={{ marginTop: 16 }}>
-                  {mySubmission.rubric_scores.map((s) => (
-                    <p key={s.id} style={{ margin: '4px 0', fontSize: 14 }}>
-                      {s.ai_reasoning} — {s.teacher_override_points ?? s.ai_awarded_points} pts
-                    </p>
-                  ))}
-                  <p style={{ fontWeight: 600, marginTop: 12 }}>
-                    Total: {totalFor(mySubmission.rubric_scores)} / {assignment.max_points}
-                  </p>
-                </div>
-              )}
-            </>
-          ) : (
-            <>
-              <h1 style={{ fontSize: 16 }}>Upload your answer</h1>
-              <p className="subtitle">Take a photo or upload an image of your handwritten answer.</p>
-              <form onSubmit={handleHandwrittenSubmit}>
-                <input type="file" accept="image/*" onChange={handleImageSelect} required />
-                {imagePreview && (
-                  <img
-                    src={imagePreview}
-                    alt="Preview of your handwritten answer"
-                    style={{ maxWidth: '100%', marginTop: 12, borderRadius: 8, border: '1px solid #e5e7eb' }}
+                  <iframe
+                    src={assignment.attachment_url}
+                    title="Assignment attachment"
+                    style={{ width: '100%', height: 400, border: '1px solid #e5e7eb', borderRadius: 8 }}
                   />
-                )}
-                <button type="submit" disabled={submitting || !imageFile}>
-                  {submitting ? 'Uploading...' : 'Submit'}
-                </button>
-              </form>
-            </>
-          )}
-        </div>
-      )}
-
-      {profile?.role === 'student' && assignment?.type === 'quiz' && (
-        <div className="page" style={{ margin: 0, maxWidth: 'none' }}>
-          <p className="subtitle">
-            Quiz-taking isn&apos;t wired up in this starter yet — question building and deterministic grading are
-            the next piece to build.
-          </p>
-        </div>
-      )}
-
-      {profile?.role === 'teacher' && (
-        <div className="page" style={{ margin: 0, maxWidth: 'none' }}>
-          <h1 style={{ fontSize: 16 }}>Submissions ({allSubmissions.length})</h1>
-          {allSubmissions.length === 0 && <p className="subtitle">No submissions yet.</p>}
-          {allSubmissions.map((s) => (
-            <div key={s.id} style={{ borderBottom: '1px solid #e5e7eb', padding: '16px 0' }}>
-              <p style={{ margin: '0 0 4px 0', fontWeight: 600 }}>{s.users?.name}</p>
-              <p style={{ margin: '0 0 8px 0', whiteSpace: 'pre-wrap', fontSize: 14 }}>{s.raw_content?.text}</p>
-              <span className={`badge badge-${s.status === 'published' ? 'graded' : 'flagged'}`}>
-                {statusLabel(s.status)}
-              </span>
-
-              {s.rubric_scores?.length > 0 && (
-                <div style={{ marginTop: 12 }}>
-                  {s.rubric_scores.map((score) => {
-                    const overridden = score.teacher_override_points !== null && score.teacher_override_points !== undefined;
-                    return (
-                      <div
-                        key={score.id}
-                        style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 10, fontSize: 13 }}
-                      >
-                        <div style={{ flex: 1 }}>
-                          <p style={{ margin: 0, color: overridden ? '#92400e' : 'inherit' }}>{score.ai_reasoning}</p>
-                          <span style={{ color: '#6b7280', fontSize: 12 }}>Suggested: {score.ai_awarded_points} pts</span>
-                        </div>
-                        <input
-                          type="number"
-                          value={draftValueFor(score)}
-                          onChange={(e) => handleOverrideChange(score.id, e.target.value)}
-                          style={{ width: 64, padding: '6px 8px', margin: 0 }}
-                        />
-                        <button
-                          type="button"
-                          onClick={() => saveOverride(score)}
-                          disabled={savingOverrideId === score.id}
-                          style={{ width: 'auto', margin: 0, padding: '6px 10px', fontSize: 12 }}
-                        >
-                          {savingOverrideId === score.id ? 'Saving...' : 'Save'}
-                        </button>
-                      </div>
-                    );
-                  })}
-                  <p style={{ fontWeight: 600, marginTop: 8 }}>
-                    Total: {totalFor(s.rubric_scores)} / {assignment.max_points}
+                  <p className="subtitle" style={{ marginTop: 6, marginBottom: 0 }}>
+                    <a href={assignment.attachment_url} target="_blank" rel="noreferrer">
+                      Open attachment in a new tab
+                    </a>
                   </p>
                 </div>
-              )}
-
-              {s.status === 'needs_teacher_approval' && (
-                <button type="button" onClick={() => handlePublish(s.id)} style={{ marginTop: 10, width: 'auto' }}>
-                  Approve & publish
-                </button>
               )}
             </div>
-          ))}
+
+            {assignment?.rubric_criteria?.length > 0 && (
+              <div className="surface">
+                <p className="section-heading">
+                  Rubric · {assignment.rubric_criteria.reduce((s, c) => s + c.max_points, 0)} pts
+                </p>
+                {assignment.rubric_criteria.map((c) => (
+                  <div key={c.id} className="criterion-row">
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <p style={{ margin: 0, fontWeight: 500 }}>
+                        <span className="check-icon">✓</span>
+                        {c.label}
+                      </p>
+                      <p style={{ margin: 0, fontWeight: 600 }}>{c.max_points} pts</p>
+                    </div>
+                    {c.description && (
+                      <p style={{ margin: '4px 0 0 20px', fontSize: 13, color: '#5f6368' }}>{c.description}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {profile?.role === 'student' && assignment?.type === 'typed' && (
+              <div className="surface">
+                {mySubmission ? (
+                  <>
+                    <p className="section-heading">Your submission</p>
+                    <p style={{ whiteSpace: 'pre-wrap' }}>{mySubmission.raw_content?.text}</p>
+                    <span className={`badge badge-${isVisibleToStudent(mySubmission.status) ? 'graded' : 'flagged'}`}>
+                      {statusLabel(mySubmission.status)}
+                    </span>
+                    {mySubmission.status === 'needs_revision' && (
+                      <p className="subtitle" style={{ marginTop: 10 }}>
+                        Your teacher has asked you to revise and resubmit this. Check with them for details.
+                      </p>
+                    )}
+                    {isVisibleToStudent(mySubmission.status) && mySubmission.rubric_scores?.length > 0 && (
+                      <div style={{ marginTop: 16 }}>
+                        {mySubmission.rubric_scores.map((s) => (
+                          <p key={s.id} style={{ margin: '4px 0', fontSize: 14 }}>
+                            {s.ai_reasoning} — {s.teacher_override_points ?? s.ai_awarded_points} pts
+                          </p>
+                        ))}
+                        <p style={{ fontWeight: 600, marginTop: 12 }}>
+                          Total: {totalFor(mySubmission.rubric_scores)} / {assignment.max_points}
+                        </p>
+                      </div>
+                    )}
+                    {!isVisibleToStudent(mySubmission.status) && mySubmission.status !== 'needs_revision' && (
+                      <p className="subtitle" style={{ marginTop: 12 }}>
+                        Your grade will appear here once your teacher reviews and publishes it.
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <p className="section-heading">Your answer</p>
+                    <form onSubmit={handleSubmit}>
+                      <textarea
+                        rows={8}
+                        value={answerText}
+                        onChange={(e) => setAnswerText(e.target.value)}
+                        placeholder="Type your answer here..."
+                        required
+                      />
+                      <button type="submit" disabled={submitting}>
+                        {submitting ? 'Submitting...' : 'Submit'}
+                      </button>
+                    </form>
+                  </>
+                )}
+              </div>
+            )}
+
+            {profile?.role === 'student' && assignment?.type === 'handwritten' && (
+              <div className="surface">
+                {mySubmission ? (
+                  <>
+                    <p className="section-heading">Your submission</p>
+                    <span className={`badge badge-${isVisibleToStudent(mySubmission.status) ? 'graded' : 'flagged'}`}>
+                      {statusLabel(mySubmission.status)}
+                    </span>
+                    {isVisibleToStudent(mySubmission.status) && mySubmission.rubric_scores?.length > 0 && (
+                      <div style={{ marginTop: 16 }}>
+                        {mySubmission.rubric_scores.map((s) => (
+                          <p key={s.id} style={{ margin: '4px 0', fontSize: 14 }}>
+                            {s.ai_reasoning} — {s.teacher_override_points ?? s.ai_awarded_points} pts
+                          </p>
+                        ))}
+                        <p style={{ fontWeight: 600, marginTop: 12 }}>
+                          Total: {totalFor(mySubmission.rubric_scores)} / {assignment.max_points}
+                        </p>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <p className="section-heading">Upload your answer</p>
+                    <form onSubmit={handleHandwrittenSubmit}>
+                      <input type="file" accept="image/*" onChange={handleImageSelect} required />
+                      {imagePreview && (
+                        <img
+                          src={imagePreview}
+                          alt="Preview"
+                          style={{ maxWidth: '100%', marginTop: 12, borderRadius: 8, border: '1px solid #e5e7eb' }}
+                        />
+                      )}
+                      <button type="submit" disabled={submitting || !imageFile}>
+                        {submitting ? 'Uploading...' : 'Submit'}
+                      </button>
+                    </form>
+                  </>
+                )}
+              </div>
+            )}
+
+            {isTeacher && (
+              <div className="surface">
+                <p className="section-heading">Submissions ({allSubmissions.length})</p>
+                {allSubmissions.length === 0 && <p className="subtitle">No submissions yet.</p>}
+                {allSubmissions.map((s) => (
+                  <div
+                    key={s.id}
+                    onClick={() => setSelectedSubmissionId(s.id)}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      padding: '10px 8px',
+                      borderRadius: 8,
+                      cursor: 'pointer',
+                      background: s.id === selectedSubmissionId ? '#e8f0fe' : 'transparent',
+                      marginBottom: 4,
+                    }}
+                  >
+                    <span style={{ fontSize: 14, fontWeight: 500 }}>{s.users?.name}</span>
+                    <span className={`badge badge-${s.status === 'published' ? 'graded' : 'flagged'}`}>
+                      {statusLabel(s.status)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {isTeacher && selectedSubmission && (
+            <div className="surface">
+              <p className="section-heading">Teacher grading</p>
+              <p style={{ margin: '0 0 14px 0', fontSize: 13, color: '#5f6368' }}>
+                {selectedSubmission.users?.name} · submitted{' '}
+                {selectedSubmission.submitted_at ? new Date(selectedSubmission.submitted_at).toLocaleDateString() : '-'}
+              </p>
+
+              {selectedSubmission.rubric_scores?.length > 0 && (
+                <div className="ai-summary-banner">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: '#6b21a8' }}>✨ AI grading summary</span>
+                    {(() => {
+                      const c = avgConfidence(selectedSubmission.rubric_scores);
+                      return c !== null ? (
+                        <span className={`confidence-pill ${confidenceClass(c)}`}>{Math.round(c * 100)}% confidence</span>
+                      ) : null;
+                    })()}
+                  </div>
+                  <p style={{ margin: '4px 0 0 0', fontSize: 12, color: '#5f6368' }}>Proposed total</p>
+                  <p className="proposed-total">
+                    {aiTotalFor(selectedSubmission.rubric_scores)} / {assignment.max_points}
+                  </p>
+                </div>
+              )}
+
+              {selectedSubmission.rubric_scores?.map((score) => {
+                const criterion = assignment.rubric_criteria?.find((c) => c.id === score.criterion_id);
+                const overridden = score.teacher_override_points !== null && score.teacher_override_points !== undefined;
+                return (
+                  <div key={score.id} className="criterion-review-row">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                      <span style={{ fontSize: 13, fontWeight: 600 }}>{criterion?.label}</span>
+                      {typeof score.ai_confidence === 'number' && (
+                        <span className={`confidence-pill ${confidenceClass(score.ai_confidence)}`}>
+                          {Math.round(score.ai_confidence * 100)}% confidence
+                        </span>
+                      )}
+                    </div>
+                    <p style={{ margin: '0 0 8px 0', fontSize: 13, color: overridden ? '#92400e' : '#5f6368' }}>
+                      {score.ai_reasoning}
+                    </p>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: 12, color: '#9aa0a6' }}>
+                        AI score: {score.ai_awarded_points} / {criterion?.max_points}
+                      </span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ fontSize: 11, color: '#9aa0a6' }}>Teacher</span>
+                        <input
+                          type="number"
+                          className="override-input"
+                          value={draftValueFor(score)}
+                          onChange={(e) => handleOverrideChange(score.id, e.target.value)}
+                          onBlur={() => saveOverride(score)}
+                        />
+                        {savingOverrideId === score.id && <span style={{ fontSize: 11 }}>...</span>}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 16 }}>
+                <span style={{ fontWeight: 600 }}>Teacher-approved total</span>
+                <span style={{ fontWeight: 700, fontSize: 20 }}>
+                  {totalFor(selectedSubmission.rubric_scores)} / {assignment.max_points}
+                </span>
+              </div>
+
+              {selectedSubmission.status === 'needs_teacher_approval' ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => handlePublish(selectedSubmission.id)}
+                    disabled={publishing}
+                    style={{ marginTop: 16 }}
+                  >
+                    {publishing ? 'Publishing...' : '✓ Approve & publish grade'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => handleReturnForRevision(selectedSubmission.id)}
+                    disabled={publishing}
+                  >
+                    ↩ Return for revision
+                  </button>
+                </>
+              ) : (
+                <p className="subtitle" style={{ marginTop: 16, marginBottom: 0 }}>
+                  Status: {statusLabel(selectedSubmission.status)}
+                </p>
+              )}
+            </div>
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 }
