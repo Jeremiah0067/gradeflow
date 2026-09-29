@@ -692,3 +692,130 @@ button:disabled {
     gap: 4px;
   }
 }
+
+
+/* ============================================
+   Grading UI: breadcrumbs, two-column layout,
+   confidence pills, AI summary banner, inbox cards
+   ============================================ */
+.breadcrumb {
+  font-size: 13px;
+  color: var(--gf-text-secondary);
+  margin-bottom: 10px;
+}
+
+.breadcrumb a {
+  color: var(--gf-blue);
+  text-decoration: none;
+}
+
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 380px;
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .two-col {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ai-summary-banner {
+  background: linear-gradient(135deg, #f3e8fd, #e3edfd);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+
+.ai-summary-banner .proposed-total {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 4px 0 0 0;
+}
+
+.confidence-pill {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.confidence-high {
+  background: var(--gf-success-bg);
+  color: var(--gf-success-text);
+}
+
+.confidence-medium {
+  background: var(--gf-warning-bg);
+  color: var(--gf-warning-text);
+}
+
+.confidence-low {
+  background: var(--gf-danger-bg);
+  color: var(--gf-danger);
+}
+
+.avatar-initials {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #e8f0fe;
+  color: var(--gf-blue);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.inbox-card {
+  background: var(--gf-surface);
+  border: 1px solid var(--gf-border);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 12px;
+}
+
+.criterion-review-row {
+  border-bottom: 1px solid var(--gf-border);
+  padding: 12px 0;
+}
+
+.criterion-review-row:last-of-type {
+  border-bottom: none;
+}
+
+.tab-pill {
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--gf-border);
+  background: var(--gf-surface);
+  color: var(--gf-text-secondary);
+  margin-top: 0;
+  width: auto;
+}
+
+.tab-pill.active {
+  background: var(--gf-blue);
+  color: white;
+  border-color: var(--gf-blue);
+}
+
+.override-input {
+  width: 70px !important;
+  padding: 6px 8px !important;
+  margin: 0 !important;
+  text-align: center;
+}
+
+.check-icon {
+  color: var(--gf-success-text);
+  margin-right: 6px;
+}
