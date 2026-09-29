@@ -25,7 +25,6 @@ async function callGemini(apiKey, parts) {
   return JSON.parse(textPart.text.replace(/```json|```/g, '').trim());
 }
 
-// Supabase webhook payload shape: { type: 'INSERT', table: 'submissions', record: {...} }
 export async function POST(req) {
   const supabase = getServiceSupabase();
   const apiKey = process.env.GEMINI_API_KEY;
@@ -49,7 +48,7 @@ export async function POST(req) {
       .join('\n');
 
     let transcript = null;
-    let confidence = 1;
+    let transcriptConfidence = 1;
 
     if (assignment.type === 'handwritten') {
       const path = submission.raw_content?.image_path;
@@ -68,15 +67,15 @@ If illegible, write [illegible]. Respond ONLY with JSON: { "transcript": "...", 
         { text: transcribePrompt },
       ]);
       transcript = transcribed.transcript;
-      confidence = transcribed.confidence;
+      transcriptConfidence = transcribed.confidence;
 
       await supabase.from('submission_transcripts').insert({
         submission_id: submission.id,
         transcript_text: transcript,
-        confidence_score: confidence,
+        confidence_score: transcriptConfidence,
       });
 
-      if (typeof confidence !== 'number' || confidence < LOW_CONFIDENCE_THRESHOLD) {
+      if (typeof transcriptConfidence !== 'number' || transcriptConfidence < LOW_CONFIDENCE_THRESHOLD) {
         await supabase.from('submissions').update({ status: 'flagged' }).eq('id', submission.id);
         return Response.json({ flagged: true });
       }
@@ -104,7 +103,11 @@ definition back at them like a checklist item - instead:
   how to include it
 Keep each one to 1-2 sentences, specific to what THEY actually wrote, not generic.
 
-Respond ONLY with JSON: { "criteria": [{ "id": "...", "awarded": number, "reasoning": "feedback written directly to the student" }] }`;
+Also give a confidence score (0-1) for each criterion - how confident you are that the score
+you awarded is correct, given how clear-cut the evidence in the answer was. Use lower
+confidence when the answer is ambiguous, borderline, or you had to make a judgment call.
+
+Respond ONLY with JSON: { "criteria": [{ "id": "...", "awarded": number, "confidence": 0-1, "reasoning": "feedback written directly to the student" }] }`;
 
     const graded = await callGemini(apiKey, [{ text: gradePrompt }]);
 
@@ -112,6 +115,7 @@ Respond ONLY with JSON: { "criteria": [{ "id": "...", "awarded": number, "reason
       submission_id: submission.id,
       criterion_id: c.id,
       ai_awarded_points: c.awarded,
+      ai_confidence: c.confidence,
       ai_reasoning: c.reasoning,
     }));
 
