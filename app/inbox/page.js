@@ -4,21 +4,36 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
 
+function initials(name) {
+  if (!name) return '?';
+  return name.split(' ').map((p) => p[0]).slice(0, 2).join('').toUpperCase();
+}
+
+function confidenceClass(avg) {
+  if (avg === null) return '';
+  if (avg >= 0.85) return 'confidence-high';
+  if (avg >= 0.6) return 'confidence-medium';
+  return 'confidence-low';
+}
+
+function avgConfidence(rubricScores) {
+  const withConf = (rubricScores || []).filter((s) => typeof s.ai_confidence === 'number');
+  if (withConf.length === 0) return null;
+  return withConf.reduce((sum, s) => sum + s.ai_confidence, 0) / withConf.length;
+}
+
 function totalFor(rubricScores) {
-  return (rubricScores || []).reduce(
-    (sum, s) => sum + Number(s.teacher_override_points ?? s.ai_awarded_points ?? 0),
-    0
-  );
+  return (rubricScores || []).reduce((sum, s) => sum + Number(s.ai_awarded_points ?? 0), 0);
 }
 
 export default function InboxPage() {
   const router = useRouter();
   const [profile, setProfile] = useState(null);
-  const [items, setItems] = useState([]);
+  const [pending, setPending] = useState([]);
+  const [reviewed, setReviewed] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [overrideDrafts, setOverrideDrafts] = useState({});
-  const [publishingId, setPublishingId] = useState(null);
+  const [tab, setTab] = useState('pending');
 
   useEffect(() => {
     load();
@@ -43,64 +58,55 @@ export default function InboxPage() {
     }
     setProfile(profileData);
 
-    const { data: teacherClasses } = await supabase.from('classes').select('id').eq('teacher_id', session.user.id);
-    const classIds = (teacherClasses || []).map((c) => c.id);
+    const { data: ownedClasses } = await supabase.from('classes').select('id').eq('teacher_id', session.user.id);
+    const { data: coTeacherRows } = await supabase
+      .from('class_teachers')
+      .select('class_id')
+      .eq('teacher_id', session.user.id);
+    const classIds = [
+      ...new Set([...(ownedClasses || []).map((c) => c.id), ...(coTeacherRows || []).map((r) => r.class_id)]),
+    ];
 
     if (classIds.length === 0) {
-      setItems([]);
+      setPending([]);
+      setReviewed([]);
       setLoading(false);
       return;
     }
 
-    const { data: assignments } = await supabase.from('assignments').select('id, title, max_points').in('class_id', classIds);
+    const { data: assignments } = await supabase
+      .from('assignments')
+      .select('id, title, class_id, max_points, classes(name)')
+      .in('class_id', classIds);
     const assignmentIds = (assignments || []).map((a) => a.id);
     const assignmentById = Object.fromEntries((assignments || []).map((a) => [a.id, a]));
 
     if (assignmentIds.length === 0) {
-      setItems([]);
+      setPending([]);
+      setReviewed([]);
       setLoading(false);
       return;
     }
 
-    const { data: submissions, error: subErr } = await supabase
+    const { data: pendingSubs, error: pErr } = await supabase
       .from('submissions')
       .select('*, users(name, email), rubric_scores(*)')
       .in('assignment_id', assignmentIds)
       .eq('status', 'needs_teacher_approval')
-      .order('submitted_at', { ascending: true });
+      .order('submitted_at', { ascending: false });
+    if (pErr) setError(pErr.message);
 
-    if (subErr) setError(subErr.message);
+    const { data: reviewedSubs } = await supabase
+      .from('submissions')
+      .select('*, users(name, email), rubric_scores(*)')
+      .in('assignment_id', assignmentIds)
+      .eq('status', 'published')
+      .order('submitted_at', { ascending: false })
+      .limit(20);
 
-    setItems((submissions || []).map((s) => ({ ...s, assignment: assignmentById[s.assignment_id] })));
+    setPending((pendingSubs || []).map((s) => ({ ...s, assignment: assignmentById[s.assignment_id] })));
+    setReviewed((reviewedSubs || []).map((s) => ({ ...s, assignment: assignmentById[s.assignment_id] })));
     setLoading(false);
-  }
-
-  function draftValueFor(score) {
-    if (score.id in overrideDrafts) return overrideDrafts[score.id];
-    return score.teacher_override_points ?? score.ai_awarded_points ?? '';
-  }
-
-  function handleOverrideChange(scoreId, value) {
-    setOverrideDrafts((prev) => ({ ...prev, [scoreId]: value }));
-  }
-
-  async function saveOverride(scoreId) {
-    const value = overrideDrafts[scoreId];
-    const numeric = value === '' ? null : Number(value);
-    await supabase.from('rubric_scores').update({ teacher_override_points: numeric }).eq('id', scoreId);
-    setOverrideDrafts((prev) => {
-      const next = { ...prev };
-      delete next[scoreId];
-      return next;
-    });
-    load();
-  }
-
-  async function handlePublish(submissionId) {
-    setPublishingId(submissionId);
-    await supabase.from('submissions').update({ status: 'published' }).eq('id', submissionId);
-    setPublishingId(null);
-    load();
   }
 
   if (loading) {
@@ -111,70 +117,144 @@ export default function InboxPage() {
     );
   }
 
+  const highConfidenceCount = pending.filter((s) => {
+    const c = avgConfidence(s.rubric_scores);
+    return c !== null && c >= 0.85;
+  }).length;
+  const needsCloserReviewCount = pending.length - highConfidenceCount;
+
+  const items = tab === 'pending' ? pending : reviewed;
+
   return (
-    <div className="page-wide">
-      <div className="top-bar">
-        <div>
-          <h1>Ungraded work</h1>
-          <p className="subtitle" style={{ marginBottom: 0 }}>
-            AI-graded submissions waiting on your approval before students see them.
-          </p>
+    <div className="layout-shell">
+      <aside className="sidebar">
+        <div className="sidebar-logo">
+          <div className="appbar-logo">G</div>
+          <span>GradeFlow</span>
         </div>
-        <button style={{ width: 'auto', marginTop: 0 }} onClick={() => router.push('/dashboard')}>
-          Back to dashboard
-        </button>
-      </div>
+        <nav className="sidebar-nav">
+          <button type="button" className="sidebar-link" onClick={() => router.push('/dashboard')}>
+            <span className="sidebar-link-left">📊 Dashboard</span>
+          </button>
+          <button type="button" className="sidebar-link" onClick={() => router.push('/dashboard')}>
+            <span className="sidebar-link-left">📚 Classes</span>
+          </button>
+          <button type="button" className="sidebar-link active">
+            <span className="sidebar-link-left">📥 Inbox</span>
+            {pending.length > 0 && <span className="sidebar-badge">{pending.length}</span>}
+          </button>
+        </nav>
+        <div className="sidebar-footer">
+          <div className="avatar-chip">{profile?.name?.[0]?.toUpperCase() || '?'}</div>
+          <div className="sidebar-footer-info">
+            <p className="sidebar-footer-name">{profile?.name}</p>
+            <p className="sidebar-footer-role">Teacher</p>
+          </div>
+        </div>
+      </aside>
 
-      {error && <p className="error-text">{error}</p>}
+      <div className="main-content">
+        <p className="breadcrumb" style={{ textTransform: 'uppercase', fontWeight: 600, fontSize: 11, letterSpacing: 0.5 }}>
+          Teacher review queue
+        </p>
+        <h1>Inbox</h1>
+        <p className="subtitle">AI-scored submissions waiting for your approval before students can see grades.</p>
 
-      {items.length === 0 && <p className="subtitle">Nothing waiting for review right now.</p>}
+        {error && <p className="error-text">{error}</p>}
 
-      {items.map((s) => (
-        <div key={s.id} className="page" style={{ margin: '0 0 16px 0', maxWidth: 'none' }}>
-          <p style={{ margin: '0 0 4px 0', fontWeight: 600 }}>
-            {s.assignment?.title} — {s.users?.name}
-          </p>
-          <p style={{ margin: '0 0 8px 0', whiteSpace: 'pre-wrap', fontSize: 14 }}>{s.raw_content?.text}</p>
-
-          {s.rubric_scores?.length > 0 && (
-            <div style={{ marginTop: 8 }}>
-              {s.rubric_scores.map((score) => (
-                <div key={score.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 10, fontSize: 13 }}>
-                  <div style={{ flex: 1 }}>
-                    <p style={{ margin: 0 }}>{score.ai_reasoning}</p>
-                    <span style={{ color: '#6b7280', fontSize: 12 }}>Suggested: {score.ai_awarded_points} pts</span>
-                  </div>
-                  <input
-                    type="number"
-                    value={draftValueFor(score)}
-                    onChange={(e) => handleOverrideChange(score.id, e.target.value)}
-                    style={{ width: 64, padding: '6px 8px', margin: 0 }}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => saveOverride(score.id)}
-                    style={{ width: 'auto', margin: 0, padding: '6px 10px', fontSize: 12 }}
-                  >
-                    Save
-                  </button>
-                </div>
-              ))}
-              <p style={{ fontWeight: 600, marginTop: 8 }}>
-                Total: {totalFor(s.rubric_scores)} / {s.assignment?.max_points}
-              </p>
-            </div>
-          )}
-
-          <button
-            type="button"
-            onClick={() => handlePublish(s.id)}
-            disabled={publishingId === s.id}
-            style={{ marginTop: 12 }}
-          >
-            {publishingId === s.id ? 'Publishing...' : 'Approve & publish to student'}
+        <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+          <button type="button" className={`tab-pill ${tab === 'pending' ? 'active' : ''}`} onClick={() => setTab('pending')}>
+            Pending · {pending.length}
+          </button>
+          <button type="button" className={`tab-pill ${tab === 'reviewed' ? 'active' : ''}`} onClick={() => setTab('reviewed')}>
+            Reviewed
           </button>
         </div>
-      ))}
+
+        <div className="two-col">
+          <div>
+            {items.length === 0 && (
+              <p className="subtitle">{tab === 'pending' ? 'Nothing waiting for review right now.' : 'No reviewed submissions yet.'}</p>
+            )}
+            {items.map((s) => {
+              const conf = avgConfidence(s.rubric_scores);
+              const total = totalFor(s.rubric_scores);
+              return (
+                <div key={s.id} className="inbox-card">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    <div style={{ display: 'flex', gap: 12 }}>
+                      <div className="avatar-initials">{initials(s.users?.name)}</div>
+                      <div>
+                        <p style={{ margin: 0, fontWeight: 600, fontSize: 14 }}>
+                          {s.users?.name} <span style={{ color: '#9aa0a6', fontWeight: 400 }}>· {s.assignment?.classes?.name}</span>
+                        </p>
+                        <p style={{ margin: '2px 0 0 0', fontSize: 13, color: '#5f6368' }}>{s.assignment?.title}</p>
+                      </div>
+                    </div>
+                    <span className={`badge ${tab === 'pending' ? 'badge-flagged' : 'badge-graded'}`}>
+                      {tab === 'pending' ? 'Awaiting approval' : 'Published'}
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 24, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div>
+                      <p style={{ margin: 0, fontSize: 11, color: '#9aa0a6', textTransform: 'uppercase' }}>Submitted</p>
+                      <p style={{ margin: 0, fontSize: 13 }}>
+                        {s.submitted_at ? new Date(s.submitted_at).toLocaleString() : '-'}
+                      </p>
+                    </div>
+                    <div>
+                      <p style={{ margin: 0, fontSize: 11, color: '#9aa0a6', textTransform: 'uppercase' }}>
+                        {tab === 'pending' ? 'AI proposed' : 'Score'}
+                      </p>
+                      <p style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>
+                        {total} / {s.assignment?.max_points}
+                      </p>
+                    </div>
+                    {conf !== null && (
+                      <div>
+                        <p style={{ margin: 0, fontSize: 11, color: '#9aa0a6', textTransform: 'uppercase' }}>Confidence</p>
+                        <span className={`confidence-pill ${confidenceClass(conf)}`}>{Math.round(conf * 100)}%</span>
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      style={{ width: 'auto', margin: 0, marginLeft: 'auto', padding: '8px 16px', fontSize: 13 }}
+                      onClick={() => router.push(`/class/${s.assignment?.class_id}/assignments/${s.assignment_id}`)}
+                    >
+                      Review →
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {tab === 'pending' && (
+            <div>
+              <div className="surface">
+                <p className="section-heading" style={{ color: '#137333' }}>✓ You stay in control</p>
+                <ol style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: '#5f6368', lineHeight: 1.8 }}>
+                  <li>Review the AI&apos;s rubric-based draft</li>
+                  <li>Override any criterion score if needed</li>
+                  <li>Approve and publish</li>
+                </ol>
+              </div>
+              <div className="surface">
+                <p className="section-heading">Queue snapshot</p>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 8 }}>
+                  <span>High confidence</span>
+                  <strong>{highConfidenceCount}</strong>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+                  <span>Needs closer review</span>
+                  <strong>{needsCloserReviewCount}</strong>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
