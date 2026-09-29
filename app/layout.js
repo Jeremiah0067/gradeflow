@@ -5,6 +5,11 @@ export const metadata = {
   description: 'Assignment-focused classroom app with AI-assisted grading',
 };
 
+export const viewport = {
+  width: 'device-width',
+  initialScale: 1,
+};
+
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
