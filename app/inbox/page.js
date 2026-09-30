@@ -34,6 +34,9 @@ export default function InboxPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [tab, setTab] = useState('pending');
+  const [stuck, setStuck] = useState([]);
+  const [sweeping, setSweeping] = useState(false);
+  const [regradingId, setRegradingId] = useState(null);
 
   useEffect(() => {
     load();
@@ -96,6 +99,23 @@ export default function InboxPage() {
       .order('submitted_at', { ascending: false });
     if (pErr) setError(pErr.message);
 
+    // Flag anything that's been sitting unpaid-attention for 3+ minutes as stuck
+    const threeMinAgo = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+    const stuckSubs = (pendingSubs || []).filter((s) => s.submitted_at < threeMinAgo);
+
+    const stuckWithErrors = await Promise.all(
+      stuckSubs.map(async (s) => {
+        const { data: errors } = await supabase
+          .from('grading_errors')
+          .select('error_message, created_at')
+          .eq('submission_id', s.id)
+          .order('created_at', { ascending: false })
+          .limit(1);
+        return { ...s, assignment: assignmentById[s.assignment_id], lastError: errors?.[0]?.error_message };
+      })
+    );
+    setStuck(stuckWithErrors);
+
     const { data: reviewedSubs } = await supabase
       .from('submissions')
       .select('*, users(name, email), rubric_scores(*)')
@@ -107,6 +127,35 @@ export default function InboxPage() {
     setPending((pendingSubs || []).map((s) => ({ ...s, assignment: assignmentById[s.assignment_id] })));
     setReviewed((reviewedSubs || []).map((s) => ({ ...s, assignment: assignmentById[s.assignment_id] })));
     setLoading(false);
+  }
+
+  async function handleRegrade(submissionId) {
+    setRegradingId(submissionId);
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData?.session?.access_token;
+
+    await fetch('/api/process-grading', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ record: { id: submissionId } }),
+    });
+
+    setRegradingId(null);
+    load();
+  }
+
+  async function handleSweepStuck() {
+    setSweeping(true);
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData?.session?.access_token;
+
+    await fetch('/api/sweep-stuck', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    setSweeping(false);
+    load();
   }
 
   if (loading) {
@@ -170,6 +219,59 @@ export default function InboxPage() {
             Reviewed
           </button>
         </div>
+
+        {stuck.length > 0 && (
+          <div className="surface" style={{ borderColor: '#f9ab00', background: '#fffdf5' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <p className="section-heading" style={{ color: '#b06000', marginBottom: 0 }}>
+                ⚠ {stuck.length} submission{stuck.length > 1 ? 's' : ''} stuck grading
+              </p>
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ width: 'auto', margin: 0, padding: '6px 12px', fontSize: 12 }}
+                onClick={handleSweepStuck}
+                disabled={sweeping}
+              >
+                {sweeping ? 'Checking...' : 'Check for stuck submissions'}
+              </button>
+            </div>
+            <p className="subtitle" style={{ marginBottom: 12 }}>
+              These have been waiting on AI grading for over 3 minutes without completing - usually a
+              temporary network or API hiccup. A background check retries these automatically every few
+              minutes, or you can regrade one directly below.
+            </p>
+            {stuck.map((s) => (
+              <div
+                key={s.id}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  padding: '10px 0',
+                  borderTop: '1px solid #f3e5c0',
+                }}
+              >
+                <div>
+                  <p style={{ margin: 0, fontSize: 13, fontWeight: 600 }}>
+                    {s.users?.name} · {s.assignment?.title}
+                  </p>
+                  <p style={{ margin: 0, fontSize: 12, color: '#9aa0a6' }}>
+                    Attempt {s.grading_attempts || 0} of 3{s.lastError && ` · last error: ${s.lastError}`}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  style={{ width: 'auto', margin: 0, padding: '6px 12px', fontSize: 12 }}
+                  onClick={() => handleRegrade(s.id)}
+                  disabled={regradingId === s.id}
+                >
+                  {regradingId === s.id ? 'Regrading...' : 'Regrade now'}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
 
         <div className="two-col">
           <div>
