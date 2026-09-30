@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/sweep-stuck",
+      "schedule": "*/5 * * * *"
+    }
+  ]
+}
