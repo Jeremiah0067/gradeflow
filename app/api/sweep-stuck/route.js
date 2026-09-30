@@ -7,20 +7,13 @@ function getServiceSupabase() {
 
 const STUCK_AFTER_MS = 3 * 60 * 1000; // 3 minutes
 
-// Finds submissions that have been sitting in pending_ai_review too long
-// (meaning the initial fire-and-forget grading call never completed) and
-// retries each one, up to MAX_ATTEMPTS. Call this from:
-// - Vercel Cron (see vercel.json) for automatic recovery
-// - The Inbox page's "Check for stuck submissions" button, for on-demand recovery
-export async function POST(req) {
+async function handleSweep(req) {
   const authHeader = req.headers.get('authorization') || '';
   const isCron = process.env.CRON_SECRET && authHeader === `Bearer ${process.env.CRON_SECRET}`;
 
   const supabase = getServiceSupabase();
 
   if (!isCron) {
-    // Not the cron job - verify this is actually a logged-in teacher, not
-    // just any bearer token, using the anon client to validate the JWT.
     const anonClient = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, {
       global: { headers: { Authorization: authHeader } },
     });
@@ -60,4 +53,12 @@ export async function POST(req) {
   }
 
   return Response.json({ checked: (stuckSubmissions || []).length, results });
+}
+
+export async function GET(req) {
+  return handleSweep(req);
+}
+
+export async function POST(req) {
+  return handleSweep(req);
 }
