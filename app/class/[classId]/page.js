@@ -238,14 +238,24 @@ export default function ClassPage() {
           </button>
         </div>
         {profile?.role === 'teacher' && (
-          <button
-            type="button"
-            className="btn-secondary"
-            style={{ width: 'auto', margin: 0, padding: '8px 14px' }}
-            onClick={() => router.push(`/class/${classId}/people`)}
-          >
-            People
-          </button>
+          <div className="appbar-right" style={{ gap: 8 }}>
+            <button
+              type="button"
+              className="btn-secondary"
+              style={{ width: 'auto', margin: 0, padding: '8px 14px' }}
+              onClick={() => router.push(`/class/${classId}/gradebook`)}
+            >
+              Gradebook
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              style={{ width: 'auto', margin: 0, padding: '8px 14px' }}
+              onClick={() => router.push(`/class/${classId}/people`)}
+            >
+              People
+            </button>
+          </div>
         )}
       </div>
 
