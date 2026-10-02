@@ -64,6 +64,10 @@ export default function AssignmentPage() {
   const [publishing, setPublishing] = useState(false);
   const [selectedSubmissionId, setSelectedSubmissionId] = useState(null);
 
+  const [quizQuestions, setQuizQuestions] = useState([]);
+  const [quizAnswers, setQuizAnswers] = useState({});
+  const [submittingQuiz, setSubmittingQuiz] = useState(false);
+
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -96,6 +100,15 @@ export default function AssignmentPage() {
     }
     setAssignment(assignmentData);
     setKlass(assignmentData.classes);
+
+    if (assignmentData.type === 'quiz') {
+      const { data: questions } = await supabase
+        .from('quiz_questions')
+        .select('*')
+        .eq('assignment_id', assignmentId)
+        .order('sort_order', { ascending: true });
+      setQuizQuestions(questions || []);
+    }
 
     if (profileData.role === 'student') {
       const { data: sub } = await supabase
@@ -205,6 +218,51 @@ export default function AssignmentPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ record: newSubmission }),
     }).catch(() => {});
+
+    load();
+  }
+
+  function selectQuizAnswer(questionId, option) {
+    setQuizAnswers((prev) => ({ ...prev, [questionId]: option }));
+  }
+
+  // Quiz grading is deterministic (compare selected option to correct_answer),
+  // so no AI call, no async pipeline, no teacher approval needed - the
+  // submission is published immediately.
+  async function handleQuizSubmit(e) {
+    e.preventDefault();
+    setSubmittingQuiz(true);
+    setError('');
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const userId = sessionData.session.user.id;
+
+    let correctCount = 0;
+    const perQuestion = quizQuestions.map((q) => {
+      const selected = quizAnswers[q.id] || null;
+      const isCorrect = selected === q.correct_answer;
+      if (isCorrect) correctCount += 1;
+      return { questionId: q.id, selected, correct: q.correct_answer, isCorrect };
+    });
+
+    const { error: insertError } = await supabase.from('submissions').insert({
+      assignment_id: assignmentId,
+      student_id: userId,
+      status: 'published',
+      raw_content: {
+        quiz: true,
+        score: correctCount,
+        total: quizQuestions.length,
+        perQuestion,
+      },
+    });
+
+    setSubmittingQuiz(false);
+
+    if (insertError) {
+      setError(insertError.message);
+      return;
+    }
 
     load();
   }
@@ -457,6 +515,68 @@ export default function AssignmentPage() {
               </div>
             )}
 
+            {profile?.role === 'student' && assignment?.type === 'quiz' && (
+              <div className="surface">
+                {mySubmission ? (
+                  <>
+                    <p className="section-heading">Your results</p>
+                    <p style={{ fontSize: 22, fontWeight: 700, margin: '0 0 16px 0' }}>
+                      {mySubmission.raw_content?.score} / {mySubmission.raw_content?.total}
+                    </p>
+                    {quizQuestions.map((q) => {
+                      const result = mySubmission.raw_content?.perQuestion?.find((p) => p.questionId === q.id);
+                      return (
+                        <div key={q.id} className="criterion-row">
+                          <p style={{ margin: '0 0 8px 0', fontWeight: 500 }}>{q.prompt}</p>
+                          {q.options.map((opt, oi) => {
+                            const isSelected = result?.selected === opt;
+                            const isCorrectOpt = q.correct_answer === opt;
+                            let color = '#5f6368';
+                            if (isCorrectOpt) color = '#137333';
+                            else if (isSelected && !isCorrectOpt) color = '#d93025';
+                            return (
+                              <p key={oi} style={{ margin: '2px 0', fontSize: 13, color, fontWeight: isSelected || isCorrectOpt ? 600 : 400 }}>
+                                {isSelected ? '● ' : '○ '}
+                                {opt}
+                                {isCorrectOpt ? ' ✓ correct' : isSelected ? ' (your answer)' : ''}
+                              </p>
+                            );
+                          })}
+                        </div>
+                      );
+                    })}
+                  </>
+                ) : (
+                  <form onSubmit={handleQuizSubmit}>
+                    <p className="section-heading">Quiz</p>
+                    {quizQuestions.map((q, qi) => (
+                      <div key={q.id} className="criterion-row">
+                        <p style={{ margin: '0 0 8px 0', fontWeight: 500 }}>
+                          {qi + 1}. {q.prompt}
+                        </p>
+                        {q.options.map((opt, oi) => (
+                          <label key={oi} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, fontSize: 14, cursor: 'pointer' }}>
+                            <input
+                              type="radio"
+                              name={`quiz-${q.id}`}
+                              checked={quizAnswers[q.id] === opt}
+                              onChange={() => selectQuizAnswer(q.id, opt)}
+                              style={{ width: 'auto', margin: 0 }}
+                              required
+                            />
+                            {opt}
+                          </label>
+                        ))}
+                      </div>
+                    ))}
+                    <button type="submit" disabled={submittingQuiz}>
+                      {submittingQuiz ? 'Submitting...' : 'Submit quiz'}
+                    </button>
+                  </form>
+                )}
+              </div>
+            )}
+
             {isTeacher && (
               <div className="surface">
                 <p className="section-heading">Submissions ({allSubmissions.length})</p>
@@ -486,7 +606,23 @@ export default function AssignmentPage() {
             )}
           </div>
 
-          {isTeacher && selectedSubmission && (
+          {isTeacher && selectedSubmission && assignment?.type === 'quiz' && (
+            <div className="surface">
+              <p className="section-heading">Quiz result</p>
+              <p style={{ margin: '0 0 14px 0', fontSize: 13, color: '#5f6368' }}>
+                {selectedSubmission.users?.name} · submitted{' '}
+                {selectedSubmission.submitted_at ? new Date(selectedSubmission.submitted_at).toLocaleDateString() : '-'}
+              </p>
+              <p style={{ fontSize: 28, fontWeight: 700, margin: '0 0 12px 0' }}>
+                {selectedSubmission.raw_content?.score} / {selectedSubmission.raw_content?.total}
+              </p>
+              <p className="subtitle" style={{ marginBottom: 0 }}>
+                Quizzes are graded automatically and published instantly - no approval needed.
+              </p>
+            </div>
+          )}
+
+          {isTeacher && selectedSubmission && assignment?.type !== 'quiz' && (
             <div className="surface">
               <p className="section-heading">Teacher grading</p>
               <p style={{ margin: '0 0 14px 0', fontSize: 13, color: '#5f6368' }}>
