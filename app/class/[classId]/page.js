@@ -29,6 +29,9 @@ export default function ClassPage() {
 
   const [extractingRubric, setExtractingRubric] = useState(false);
 
+  const emptyQuizQuestion = () => ({ prompt: '', options: ['', '', '', ''], correctIndex: 0 });
+  const [quizQuestions, setQuizQuestions] = useState([emptyQuizQuestion()]);
+
   useEffect(() => {
     loadClass();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -128,6 +131,26 @@ export default function ClassPage() {
     setCriteria((prev) => (prev.length === 1 ? prev : prev.filter((_, i) => i !== index)));
   }
 
+  function updateQuizQuestion(index, field, value) {
+    setQuizQuestions((prev) => prev.map((q, i) => (i === index ? { ...q, [field]: value } : q)));
+  }
+
+  function updateQuizOption(qIndex, optIndex, value) {
+    setQuizQuestions((prev) =>
+      prev.map((q, i) =>
+        i === qIndex ? { ...q, options: q.options.map((o, oi) => (oi === optIndex ? value : o)) } : q
+      )
+    );
+  }
+
+  function addQuizQuestion() {
+    setQuizQuestions((prev) => [...prev, emptyQuizQuestion()]);
+  }
+
+  function removeQuizQuestion(index) {
+    setQuizQuestions((prev) => (prev.length === 1 ? prev : prev.filter((_, i) => i !== index)));
+  }
+
   async function handleDeleteAssignment(e, assignmentId) {
     e.stopPropagation();
     if (!confirm('Delete this assignment? This also deletes all its submissions and grades. This cannot be undone.')) return;
@@ -150,7 +173,17 @@ export default function ClassPage() {
       return;
     }
 
-    const maxPoints = type === 'quiz' ? 0 : rubricTotal;
+    const validQuestions = quizQuestions.filter(
+      (q) => q.prompt.trim() && q.options.every((o) => o.trim()) && q.options[q.correctIndex]?.trim()
+    );
+
+    if (type === 'quiz' && validQuestions.length === 0) {
+      setError('Add at least one quiz question with all 4 options filled in and a correct answer selected.');
+      setCreating(false);
+      return;
+    }
+
+    const maxPoints = type === 'quiz' ? validQuestions.length : rubricTotal;
 
     let attachmentUrl = null;
     if (attachmentFile) {
@@ -188,7 +221,24 @@ export default function ClassPage() {
       return;
     }
 
-    if (type !== 'quiz') {
+    if (type === 'quiz') {
+      const questionRows = validQuestions.map((q, i) => ({
+        assignment_id: assignment.id,
+        prompt: q.prompt.trim(),
+        options: q.options.map((o) => o.trim()),
+        correct_answer: q.options[q.correctIndex].trim(),
+        sort_order: i,
+      }));
+
+      const { error: questionError } = await supabase.from('quiz_questions').insert(questionRows);
+
+      if (questionError) {
+        setError(`Assignment created, but quiz questions failed to save: ${questionError.message}`);
+        setCreating(false);
+        loadClass();
+        return;
+      }
+    } else {
       const criteriaRows = validCriteria.map((c, i) => ({
         assignment_id: assignment.id,
         label: c.label.trim(),
@@ -212,6 +262,7 @@ export default function ClassPage() {
     setInstructions('');
     setDueDate('');
     setCriteria([emptyCriterion()]);
+    setQuizQuestions([emptyQuizQuestion()]);
     setAttachmentFile(null);
     loadClass();
   }
@@ -298,10 +349,64 @@ export default function ClassPage() {
             <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
 
             {type === 'quiz' ? (
-              <p className="subtitle" style={{ marginTop: 16 }}>
-                Quiz questions aren&apos;t built into this form yet — add them via Supabase&apos;s{' '}
-                <code>quiz_questions</code> table for now, referencing this assignment&apos;s id once created.
-              </p>
+              <>
+                <p className="section-heading" style={{ marginTop: 20 }}>Quiz questions</p>
+                {quizQuestions.map((q, qi) => (
+                  <div key={qi} className="criterion-row">
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                      <input
+                        style={{ flex: 1 }}
+                        placeholder={`Question ${qi + 1}`}
+                        value={q.prompt}
+                        onChange={(e) => updateQuizQuestion(qi, 'prompt', e.target.value)}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeQuizQuestion(qi)}
+                        style={{
+                          width: 'auto',
+                          marginTop: 0,
+                          background: '#fee2e2',
+                          color: '#b91c1c',
+                          padding: '10px 12px',
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                    {q.options.map((opt, oi) => (
+                      <div key={oi} style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 }}>
+                        <input
+                          type="radio"
+                          name={`correct-${qi}`}
+                          checked={q.correctIndex === oi}
+                          onChange={() => updateQuizQuestion(qi, 'correctIndex', oi)}
+                          style={{ width: 'auto', margin: 0 }}
+                        />
+                        <input
+                          style={{ flex: 1, fontSize: 13 }}
+                          placeholder={`Option ${String.fromCharCode(65 + oi)}`}
+                          value={opt}
+                          onChange={(e) => updateQuizOption(qi, oi, e.target.value)}
+                        />
+                      </div>
+                    ))}
+                    <p className="subtitle" style={{ marginTop: 6, marginBottom: 0, fontSize: 12 }}>
+                      Select the radio next to the correct answer.
+                    </p>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={addQuizQuestion}
+                  style={{ background: 'white', color: '#1f2937', border: '1px dashed #d1d5db', marginTop: 4 }}
+                >
+                  + Add question
+                </button>
+                <p className="subtitle" style={{ marginTop: 8, marginBottom: 0 }}>
+                  {quizQuestions.filter((q) => q.prompt.trim()).length} question(s), 1 point each
+                </p>
+              </>
             ) : (
               <>
                 <p className="section-heading" style={{ marginTop: 20 }}>Rubric</p>
