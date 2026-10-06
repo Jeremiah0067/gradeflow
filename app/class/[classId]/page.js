@@ -59,11 +59,18 @@ export default function ClassPage() {
     }
     setKlass(classData);
 
-    const { data: assignmentData, error: aErr } = await supabase
+    let assignmentQuery = supabase
       .from('assignments')
       .select('*, rubric_criteria(*)')
       .eq('class_id', classId)
       .order('created_at', { ascending: false });
+
+    // Students never see draft assignments; teachers see everything
+    if (profileData.role === 'student') {
+      assignmentQuery = assignmentQuery.eq('status', 'published');
+    }
+
+    const { data: assignmentData, error: aErr } = await assignmentQuery;
 
     if (aErr) setError(aErr.message);
     setAssignments(assignmentData || []);
@@ -151,6 +158,12 @@ export default function ClassPage() {
     setQuizQuestions((prev) => (prev.length === 1 ? prev : prev.filter((_, i) => i !== index)));
   }
 
+  async function handlePublishDraft(e, assignmentId) {
+    e.stopPropagation();
+    await supabase.from('assignments').update({ status: 'published' }).eq('id', assignmentId);
+    loadClass();
+  }
+
   async function handleDeleteAssignment(e, assignmentId) {
     e.stopPropagation();
     if (!confirm('Delete this assignment? This also deletes all its submissions and grades. This cannot be undone.')) return;
@@ -160,7 +173,7 @@ export default function ClassPage() {
 
   const rubricTotal = criteria.reduce((sum, c) => sum + (Number(c.maxPoints) || 0), 0);
 
-  async function handleCreateAssignment(e) {
+  async function handleCreateAssignment(e, publishStatus) {
     e.preventDefault();
     setCreating(true);
     setError('');
@@ -211,6 +224,7 @@ export default function ClassPage() {
         max_points: maxPoints,
         due_date: dueDate ? new Date(dueDate).toISOString() : null,
         attachment_url: attachmentUrl,
+        status: publishStatus,
       })
       .select()
       .single();
@@ -320,7 +334,7 @@ export default function ClassPage() {
       {profile?.role === 'teacher' && (
         <div className="surface">
           <p className="section-heading">New assignment</p>
-          <form onSubmit={handleCreateAssignment}>
+          <form onSubmit={(e) => e.preventDefault()}>
             <label>Title</label>
             <input value={title} onChange={(e) => setTitle(e.target.value)} required />
 
@@ -473,9 +487,19 @@ export default function ClassPage() {
               </>
             )}
 
-            <button type="submit" disabled={creating}>
-              {creating ? 'Creating...' : 'Create assignment'}
-            </button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={creating}
+                onClick={(e) => handleCreateAssignment(e, 'draft')}
+              >
+                {creating ? 'Saving...' : 'Save draft'}
+              </button>
+              <button type="button" disabled={creating} onClick={(e) => handleCreateAssignment(e, 'published')}>
+                {creating ? 'Assigning...' : 'Assign'}
+              </button>
+            </div>
           </form>
         </div>
       )}
@@ -492,12 +516,24 @@ export default function ClassPage() {
           >
             <div className="assignment-icon">{icon}</div>
             <div style={{ flex: 1 }}>
-              <p className="assignment-row-title">{a.title}</p>
+              <p className="assignment-row-title">
+                {a.title} {a.status === 'draft' && <span className="tag">Draft</span>}
+              </p>
               <p className="assignment-row-meta">
                 {a.type} · {a.max_points} pts
                 {a.due_date && ` · due ${new Date(a.due_date).toLocaleDateString()}`}
               </p>
             </div>
+            {profile?.role === 'teacher' && a.status === 'draft' && (
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ width: 'auto', margin: 0, padding: '6px 12px', fontSize: 12 }}
+                onClick={(e) => handlePublishDraft(e, a.id)}
+              >
+                Publish
+              </button>
+            )}
             {profile?.role === 'teacher' && (
               <button
                 type="button"
