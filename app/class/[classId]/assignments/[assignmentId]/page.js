@@ -68,6 +68,11 @@ export default function AssignmentPage() {
   const [quizAnswers, setQuizAnswers] = useState({});
   const [submittingQuiz, setSubmittingQuiz] = useState(false);
 
+  const [revisionText, setRevisionText] = useState('');
+  const [revisionImageFile, setRevisionImageFile] = useState(null);
+  const [revisionImagePreview, setRevisionImagePreview] = useState(null);
+  const [resubmitting, setResubmitting] = useState(false);
+
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -98,6 +103,11 @@ export default function AssignmentPage() {
       setLoading(false);
       return;
     }
+    if (assignmentData.status === 'draft' && profileData.role === 'student') {
+      router.push(`/class/${classId}`);
+      return;
+    }
+
     setAssignment(assignmentData);
     setKlass(assignmentData.classes);
 
@@ -118,6 +128,9 @@ export default function AssignmentPage() {
         .eq('student_id', session.user.id)
         .maybeSingle();
       setMySubmission(sub);
+      if (sub?.status === 'needs_revision' && sub.raw_content?.text) {
+        setRevisionText(sub.raw_content.text);
+      }
     } else {
       const { data: subs, error: subErr } = await supabase
         .from('submissions')
@@ -217,6 +230,100 @@ export default function AssignmentPage() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ record: newSubmission }),
+    }).catch(() => {});
+
+    load();
+  }
+
+  // Resubmitting after "Return for revision": clear the old AI scores
+  // (they were for the old answer), update the content, and re-trigger
+  // grading the same way a first-time submission does.
+  async function handleResubmitTyped(e) {
+    e.preventDefault();
+    setResubmitting(true);
+    setError('');
+
+    await supabase.from('rubric_scores').delete().eq('submission_id', mySubmission.id);
+
+    const { data: updatedSubmission, error: updateError } = await supabase
+      .from('submissions')
+      .update({
+        raw_content: { text: revisionText },
+        status: 'pending_ai_review',
+        grading_attempts: 0,
+        submitted_at: new Date().toISOString(),
+      })
+      .eq('id', mySubmission.id)
+      .select()
+      .single();
+
+    setResubmitting(false);
+
+    if (updateError) {
+      setError(updateError.message);
+      return;
+    }
+
+    fetch('/api/process-grading', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ record: updatedSubmission }),
+    }).catch(() => {});
+
+    load();
+  }
+
+  function handleRevisionImageSelect(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setRevisionImageFile(file);
+    setRevisionImagePreview(URL.createObjectURL(file));
+  }
+
+  async function handleResubmitHandwritten(e) {
+    e.preventDefault();
+    if (!revisionImageFile) return;
+
+    setResubmitting(true);
+    setError('');
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const userId = sessionData.session.user.id;
+
+    const path = `${userId}/${assignmentId}-${Date.now()}-${revisionImageFile.name}`;
+    const { error: uploadError } = await supabase.storage.from('submissions').upload(path, revisionImageFile);
+
+    if (uploadError) {
+      setResubmitting(false);
+      setError(uploadError.message);
+      return;
+    }
+
+    await supabase.from('rubric_scores').delete().eq('submission_id', mySubmission.id);
+
+    const { data: updatedSubmission, error: updateError } = await supabase
+      .from('submissions')
+      .update({
+        raw_content: { image_path: path, mime_type: revisionImageFile.type },
+        status: 'pending_ai_review',
+        grading_attempts: 0,
+        submitted_at: new Date().toISOString(),
+      })
+      .eq('id', mySubmission.id)
+      .select()
+      .single();
+
+    setResubmitting(false);
+
+    if (updateError) {
+      setError(updateError.message);
+      return;
+    }
+
+    fetch('/api/process-grading', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ record: updatedSubmission }),
     }).catch(() => {});
 
     load();
@@ -423,18 +530,32 @@ export default function AssignmentPage() {
 
             {profile?.role === 'student' && assignment?.type === 'typed' && (
               <div className="surface">
-                {mySubmission ? (
+                {mySubmission && mySubmission.status === 'needs_revision' ? (
+                  <>
+                    <p className="section-heading">Revise your answer</p>
+                    <span className="badge badge-flagged">Needs revision</span>
+                    <p className="subtitle" style={{ marginTop: 10 }}>
+                      Your teacher asked you to revise and resubmit this. Update your answer below and resubmit.
+                    </p>
+                    <form onSubmit={handleResubmitTyped}>
+                      <textarea
+                        rows={8}
+                        value={revisionText}
+                        onChange={(e) => setRevisionText(e.target.value)}
+                        required
+                      />
+                      <button type="submit" disabled={resubmitting}>
+                        {resubmitting ? 'Resubmitting...' : 'Resubmit'}
+                      </button>
+                    </form>
+                  </>
+                ) : mySubmission ? (
                   <>
                     <p className="section-heading">Your submission</p>
                     <p style={{ whiteSpace: 'pre-wrap' }}>{mySubmission.raw_content?.text}</p>
                     <span className={`badge badge-${isVisibleToStudent(mySubmission.status) ? 'graded' : 'flagged'}`}>
                       {statusLabel(mySubmission.status)}
                     </span>
-                    {mySubmission.status === 'needs_revision' && (
-                      <p className="subtitle" style={{ marginTop: 10 }}>
-                        Your teacher has asked you to revise and resubmit this. Check with them for details.
-                      </p>
-                    )}
                     {isVisibleToStudent(mySubmission.status) && mySubmission.rubric_scores?.length > 0 && (
                       <div style={{ marginTop: 16 }}>
                         {mySubmission.rubric_scores.map((s) => (
@@ -447,7 +568,7 @@ export default function AssignmentPage() {
                         </p>
                       </div>
                     )}
-                    {!isVisibleToStudent(mySubmission.status) && mySubmission.status !== 'needs_revision' && (
+                    {!isVisibleToStudent(mySubmission.status) && (
                       <p className="subtitle" style={{ marginTop: 12 }}>
                         Your grade will appear here once your teacher reviews and publishes it.
                       </p>
@@ -475,7 +596,28 @@ export default function AssignmentPage() {
 
             {profile?.role === 'student' && assignment?.type === 'handwritten' && (
               <div className="surface">
-                {mySubmission ? (
+                {mySubmission && mySubmission.status === 'needs_revision' ? (
+                  <>
+                    <p className="section-heading">Revise your answer</p>
+                    <span className="badge badge-flagged">Needs revision</span>
+                    <p className="subtitle" style={{ marginTop: 10 }}>
+                      Your teacher asked you to revise and resubmit this. Upload a new photo to resubmit.
+                    </p>
+                    <form onSubmit={handleResubmitHandwritten}>
+                      <input type="file" accept="image/*" onChange={handleRevisionImageSelect} required />
+                      {revisionImagePreview && (
+                        <img
+                          src={revisionImagePreview}
+                          alt="Preview"
+                          style={{ maxWidth: '100%', marginTop: 12, borderRadius: 8, border: '1px solid #e5e7eb' }}
+                        />
+                      )}
+                      <button type="submit" disabled={resubmitting || !revisionImageFile}>
+                        {resubmitting ? 'Uploading...' : 'Resubmit'}
+                      </button>
+                    </form>
+                  </>
+                ) : mySubmission ? (
                   <>
                     <p className="section-heading">Your submission</p>
                     <span className={`badge badge-${isVisibleToStudent(mySubmission.status) ? 'graded' : 'flagged'}`}>
