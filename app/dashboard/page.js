@@ -394,6 +394,16 @@ export default function DashboardPage() {
             </button>
           </div>
         )}
+
+        {isTeacher && (
+          <div className="stats-row">
+            <div className="stat-card">
+              <div className="stat-icon" style={{ background: '#fdf1d6' }}>⏳</div>
+              <div>
+                <p className="stat-value">{stats.awaitingApproval}</p>
+                <p className="stat-label">Awaiting approval</p>
+              </div>
+            </div>
             <div className="stat-card">
               <div className="stat-icon" style={{ background: '#e3edfd' }}>📅</div>
               <div>
