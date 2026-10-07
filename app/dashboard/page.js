@@ -336,9 +336,8 @@ export default function DashboardPage() {
             </button>
           )}
           {isTeacher && (
-            <button type="button" className="sidebar-link" onClick={() => router.push('/inbox')}>
-              <span className="sidebar-link-left">📥 Inbox</span>
-              {stats.awaitingApproval > 0 && <span className="sidebar-badge">{stats.awaitingApproval}</span>}
+            <button type="button" className="sidebar-link" onClick={() => router.push('/marking')}>
+              <span className="sidebar-link-left">✍️ Marking</span>
             </button>
           )}
         </nav>
@@ -382,14 +381,19 @@ export default function DashboardPage() {
         {error && <p className="error-text">{error}</p>}
 
         {isTeacher && (
-          <div className="stats-row">
-            <div className="stat-card">
-              <div className="stat-icon" style={{ background: '#fdf0da' }}>⏱️</div>
-              <div>
-                <p className="stat-value">{stats.awaitingApproval}</p>
-                <p className="stat-label">Awaiting approval</p>
-              </div>
+          <div className="surface" style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <div className="assignment-icon">✍️</div>
+            <div style={{ flex: 1 }}>
+              <p className="assignment-row-title">Marking mode</p>
+              <p className="assignment-row-meta">
+                Photograph handwritten tests and exams, let the AI grade them in one batch, then approve and export.
+              </p>
             </div>
+            <button type="button" style={{ width: 'auto', marginTop: 0 }} onClick={() => router.push('/marking')}>
+              Open marking
+            </button>
+          </div>
+        )}
             <div className="stat-card">
               <div className="stat-icon" style={{ background: '#e3edfd' }}>📅</div>
               <div>
