@@ -11,6 +11,8 @@ import {
   LOW_CONFIDENCE,
   BULK_MIN_MEAN,
 } from '../../../../lib/reviewHelpers';
+import { toCsv } from '../../../../lib/csv';
+import { buildExportTable, downloadCsv, exportFileName } from '../../../../lib/exportResults';
 
 const BUCKET = 'exam-papers';
 const GRADED = ['needs_review', 'flagged', 'approved'];
@@ -101,6 +103,12 @@ export default function ReviewPage() {
   const [draftMarks, setDraftMarks] = useState({});
   const [draftComment, setDraftComment] = useState('');
   const [draftStudentId, setDraftStudentId] = useState('');
+
+  // Export panel
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportData, setExportData] = useState(null); // { papers, scores } fetched fresh when opened
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportOpts, setExportOpts] = useState({ perQuestion: true, comments: true, includeMissing: true });
 
   useEffect(() => {
     load(true);
@@ -394,6 +402,62 @@ export default function ReviewPage() {
     setBusy(false);
   }
 
+  // ---------- export ----------
+  // Always read fresh from the database so the file matches what is approved right now
+  async function fetchExportData() {
+    const allPapers = await fetchPaged(() =>
+      supabase
+        .from('exam_papers')
+        .select('id, student_id, status, final_total, teacher_comment')
+        .eq('exam_id', examId)
+        .order('id')
+    );
+    const approvedIds = allPapers.filter((p) => p.status === 'approved').map((p) => p.id);
+    const allScores = [];
+    for (let i = 0; i < approvedIds.length; i += 20) {
+      const chunk = approvedIds.slice(i, i + 20);
+      const rows = await fetchPaged(() =>
+        supabase.from('exam_scores').select('paper_id, question_id, final_marks').in('paper_id', chunk).order('id')
+      );
+      allScores.push(...rows);
+    }
+    return { papers: allPapers, scores: allScores };
+  }
+
+  async function openExport() {
+    setExportOpen(true);
+    setError('');
+    setNotice('');
+    setExportBusy(true);
+    try {
+      setExportData(await fetchExportData());
+    } catch (err) {
+      setError(err.message);
+    }
+    setExportBusy(false);
+  }
+
+  async function handleDownload() {
+    setExportBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const data = await fetchExportData();
+      setExportData(data);
+      const table = buildExportTable({ exam, questions, students, papers: data.papers, scores: data.scores, options: exportOpts });
+      downloadCsv(exportFileName(exam.title), toCsv([table.header, ...table.rows]));
+      setNotice(`Downloaded ${table.rows.length} row${table.rows.length === 1 ? '' : 's'}.`);
+    } catch (err) {
+      setError(err.message);
+    }
+    setExportBusy(false);
+  }
+
+  const exportTable = useMemo(() => {
+    if (!exportData || !exam) return null;
+    return buildExportTable({ exam, questions, students, papers: exportData.papers, scores: exportData.scores, options: exportOpts });
+  }, [exportData, exportOpts, exam, questions, students]);
+
   if (loading) {
     return (
       <div className="page-wide">
@@ -441,6 +505,16 @@ export default function ReviewPage() {
             {counts.approved} of {counts.all} graded scripts approved · out of {exam.total_marks} marks
           </p>
         </div>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+        <button
+          type="button"
+          className="btn-secondary"
+          style={{ width: 'auto', marginTop: 0 }}
+          disabled={busy || exportBusy}
+          onClick={exportOpen ? () => setExportOpen(false) : openExport}
+        >
+          {exportOpen ? 'Close export' : 'Export CSV'}
+        </button>
         <button
           type="button"
           style={{ width: 'auto', marginTop: 0 }}
@@ -450,10 +524,81 @@ export default function ReviewPage() {
         >
           {bulkEligible.length === 0 ? 'No confident scripts to bulk approve' : `Approve ${bulkEligible.length} confident script${bulkEligible.length === 1 ? '' : 's'}`}
         </button>
+        </div>
       </div>
 
       {error && <p className="error-text">{error}</p>}
       {notice && <p style={{ color: 'var(--gf-success-text)', fontSize: 13 }}>{notice}</p>}
+
+      {exportOpen && (
+        <div className="surface" style={{ marginBottom: 16 }}>
+          <p className="section-heading">Export results</p>
+
+          {!exportTable ? (
+            <p className="assignment-row-meta">Loading the latest results...</p>
+          ) : (
+            <>
+              <p className="assignment-row-title" style={{ marginBottom: 6 }}>
+                {exportTable.summary.approved} of {exportTable.summary.rosterSize} students have an approved score
+              </p>
+              {exportTable.summary.awaiting > 0 && (
+                <p style={{ color: 'var(--gf-warning-text)', fontSize: 13, margin: '2px 0' }}>
+                  {exportTable.summary.awaiting} script{exportTable.summary.awaiting === 1 ? ' is' : 's are'} graded but not
+                  approved yet.
+                </p>
+              )}
+              {exportTable.summary.notGraded + exportTable.summary.failed > 0 && (
+                <p style={{ color: 'var(--gf-warning-text)', fontSize: 13, margin: '2px 0' }}>
+                  {exportTable.summary.notGraded + exportTable.summary.failed} uploaded script
+                  {exportTable.summary.notGraded + exportTable.summary.failed === 1 ? ' has' : 's have'} not been graded.
+                </p>
+              )}
+              {exportTable.summary.noScript > 0 && (
+                <p style={{ color: 'var(--gf-warning-text)', fontSize: 13, margin: '2px 0' }}>
+                  {exportTable.summary.noScript} student{exportTable.summary.noScript === 1 ? ' has' : 's have'} no script uploaded.
+                </p>
+              )}
+              {exportTable.summary.unassignedScripts > 0 && (
+                <p style={{ color: 'var(--gf-warning-text)', fontSize: 13, margin: '2px 0' }}>
+                  {exportTable.summary.unassignedScripts} uploaded script{exportTable.summary.unassignedScripts === 1 ? ' is' : 's are'} not
+                  assigned to a student, so cannot be exported.
+                </p>
+              )}
+
+              <div style={{ margin: '12px 0' }}>
+                {[
+                  ['includeMissing', 'Include students without an approved score (listed with a status, so nobody goes missing)'],
+                  ['perQuestion', 'Show the marks for each question'],
+                  ['comments', 'Include my comments'],
+                ].map(([key, label]) => (
+                  <label key={key} style={{ display: 'flex', alignItems: 'center', margin: '6px 0', fontWeight: 400 }}>
+                    <input
+                      type="checkbox"
+                      checked={exportOpts[key]}
+                      onChange={(e) => setExportOpts((prev) => ({ ...prev, [key]: e.target.checked }))}
+                      style={{ width: 'auto', margin: '0 8px 0 0' }}
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                style={{ width: 'auto', margin: 0 }}
+                disabled={exportBusy || exportTable.rows.length === 0}
+                onClick={handleDownload}
+              >
+                {exportBusy
+                  ? 'Preparing...'
+                  : exportTable.rows.length === 0
+                    ? 'Nothing to export yet'
+                    : `Download CSV (${exportTable.rows.length} row${exportTable.rows.length === 1 ? '' : 's'})`}
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
       {papers.length === 0 ? (
         <div className="surface" style={{ textAlign: 'center', padding: 40 }}>
