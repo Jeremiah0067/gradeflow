@@ -8,15 +8,18 @@ import { compressImage } from '../../../lib/imageCompress';
 
 const BUCKET = 'exam-papers';
 const MAX_PAGES_PER_SCRIPT = 20;
+const GRADING_CONCURRENCY = 3; // how many scripts are graded at the same time
+const MAX_ATTEMPTS = 3; // keep in step with lib/gradeExamPaper.js
+const STALE_GRADING_MS = 10 * 60 * 1000;
 const smallBtn = { width: 'auto', margin: 0, padding: '6px 14px', fontSize: 13 };
 
 const STATUS_LABEL = {
   uploaded: 'Uploaded',
   queued: 'Queued',
   grading: 'Grading',
-  needs_review: 'Needs review',
+  needs_review: 'Graded, needs your review',
   approved: 'Approved',
-  flagged: 'Flagged',
+  flagged: 'Graded, check carefully',
   failed: 'Failed',
 };
 
@@ -44,6 +47,47 @@ async function fetchAllStudents(examId) {
   return all;
 }
 
+async function fetchAllUsage(examId) {
+  const all = [];
+  const PAGE = 1000;
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .from('exam_ai_usage')
+      .select('est_cost_usd')
+      .eq('exam_id', examId)
+      .order('created_at')
+      .order('id')
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(error.message);
+    all.push(...data);
+    if (data.length < PAGE) break;
+  }
+  return all;
+}
+
+// Scripts that can be sent to the AI now
+function isGradable(paper) {
+  if (['uploaded', 'queued'].includes(paper.status)) return true;
+  if (paper.status === 'failed') return (paper.grading_attempts || 0) < MAX_ATTEMPTS;
+  if (paper.status === 'grading' && paper.grading_started_at) {
+    return Date.now() - new Date(paper.grading_started_at).getTime() > STALE_GRADING_MS;
+  }
+  return false;
+}
+
+async function callGradeApi(paperId, force = false) {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData?.session?.access_token;
+  const res = await fetch('/api/marking/grade-paper', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ paperId, force }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Request failed (${res.status}).`);
+  return data;
+}
+
 export default function ExamWorkspacePage() {
   const router = useRouter();
   const { examId } = useParams();
@@ -63,9 +107,15 @@ export default function ExamWorkspacePage() {
   const [preparingKey, setPreparingKey] = useState(null);
   const [uploading, setUploading] = useState(null);
   const [showMissingOnly, setShowMissingOnly] = useState(false);
+  const [grading, setGrading] = useState(null); // { done, total, failed } while a batch is running
+  const [retryingId, setRetryingId] = useState(null);
+  const [usage, setUsage] = useState({ calls: 0, cost: 0 });
+  const cancelRef = useRef(false);
+  const gradingRef = useRef(null);
 
   const draftsRef = useRef(drafts);
   draftsRef.current = drafts;
+  gradingRef.current = grading;
 
   useEffect(() => {
     load();
@@ -75,7 +125,7 @@ export default function ExamWorkspacePage() {
   // Warn before leaving the page if there are photos that were not uploaded yet
   useEffect(() => {
     function onBeforeUnload(e) {
-      if (draftsRef.current.some((d) => d.pages.length > 0)) {
+      if (draftsRef.current.some((d) => d.pages.length > 0) || gradingRef.current) {
         e.preventDefault();
         e.returnValue = '';
       }
@@ -156,6 +206,12 @@ export default function ExamWorkspacePage() {
       } else {
         setThumbs({});
       }
+
+      const usageRows = await fetchAllUsage(examId);
+      setUsage({
+        calls: usageRows.length,
+        cost: usageRows.reduce((sum, r) => sum + (Number(r.est_cost_usd) || 0), 0),
+      });
     } catch (err) {
       setError(err.message);
     }
@@ -344,6 +400,81 @@ export default function ExamWorkspacePage() {
     await load(false);
   }
 
+  // ---------- AI grading ----------
+  async function handleGradeAll() {
+    const targets = papers.filter(isGradable);
+    if (targets.length === 0) return;
+
+    const ok = confirm(
+      `Grade ${targets.length} script${targets.length === 1 ? '' : 's'} with AI now?\n\nEach script is one AI call. You can stop at any time.`
+    );
+    if (!ok) return;
+
+    setError('');
+    setNotice('');
+    cancelRef.current = false;
+
+    const ids = targets.map((p) => p.id);
+
+    // Mark them as queued (in small groups, so the request stays short)
+    for (let i = 0; i < ids.length; i += 50) {
+      await supabase
+        .from('exam_papers')
+        .update({ status: 'queued' })
+        .in('id', ids.slice(i, i + 50))
+        .in('status', ['uploaded', 'failed']);
+    }
+
+    const queue = [...ids];
+    const problems = [];
+    let done = 0;
+    let failed = 0;
+    setGrading({ done: 0, total: ids.length, failed: 0 });
+
+    async function worker() {
+      while (queue.length > 0 && !cancelRef.current) {
+        const id = queue.shift();
+        try {
+          const result = await callGradeApi(id, false);
+          if (result.ok === false) {
+            failed += 1;
+            problems.push(result.error);
+          }
+        } catch (err) {
+          failed += 1;
+          problems.push(err.message);
+        }
+        done += 1;
+        setGrading({ done, total: ids.length, failed });
+        if (done % 4 === 0) load(false);
+      }
+    }
+
+    await Promise.all(Array.from({ length: Math.min(GRADING_CONCURRENCY, ids.length) }, worker));
+
+    setGrading(null);
+    const stopped = cancelRef.current && queue.length > 0;
+    setNotice(
+      `${done - failed} graded${failed ? `, ${failed} failed` : ''}${stopped ? `. Stopped early with ${queue.length} left in the queue` : ''}.`
+    );
+    if (problems.length > 0) setError(`Some scripts failed: ${[...new Set(problems)].slice(0, 3).join(' | ')}`);
+    await load(false);
+  }
+
+  async function handleRetry(paper) {
+    setError('');
+    setNotice('');
+    setRetryingId(paper.id);
+    try {
+      const result = await callGradeApi(paper.id, true);
+      if (result.ok === false) setError(result.error);
+    } catch (err) {
+      setError(err.message);
+    }
+    setRetryingId(null);
+    await load(false);
+  }
+
   if (loading) {
     return (
       <div className="page-wide">
@@ -364,6 +495,7 @@ export default function ExamWorkspacePage() {
   }
 
   const draftsWithPages = drafts.filter((d) => d.pages.length > 0).length;
+  const gradableCount = papers.filter(isGradable).length;
   const visibleStudents = showMissingOnly ? students.filter((s) => !studentIdsWithScript.has(s.id)) : students;
 
   return (
@@ -380,10 +512,52 @@ export default function ExamWorkspacePage() {
             {questions.length === 1 ? '' : 's'} · {exam.total_marks} marks
           </p>
         </div>
-        <button type="button" style={{ width: 'auto', marginTop: 0 }} disabled title="AI grading is built in the next step">
-          Grade with AI (next step)
-        </button>
+        {grading ? (
+          <button
+            type="button"
+            className="btn-secondary"
+            style={{ width: 'auto', marginTop: 0 }}
+            onClick={() => {
+              cancelRef.current = true;
+            }}
+          >
+            Stop after current scripts
+          </button>
+        ) : (
+          <button
+            type="button"
+            style={{ width: 'auto', marginTop: 0 }}
+            disabled={gradableCount === 0 || !!uploading}
+            onClick={handleGradeAll}
+          >
+            {gradableCount === 0
+              ? 'Nothing to grade'
+              : `Grade ${gradableCount} script${gradableCount === 1 ? '' : 's'} with AI`}
+          </button>
+        )}
       </div>
+
+      {grading && (
+        <div className="surface" style={{ marginBottom: 16 }}>
+          <p className="assignment-row-title">
+            Grading {grading.done} of {grading.total}
+            {grading.failed > 0 && ` (${grading.failed} failed)`}
+          </p>
+          <div style={{ height: 8, background: 'var(--gf-border)', borderRadius: 4, overflow: 'hidden', marginTop: 8 }}>
+            <div
+              style={{
+                height: '100%',
+                width: `${Math.round((grading.done / grading.total) * 100)}%`,
+                background: 'var(--gf-blue)',
+                transition: 'width 0.3s',
+              }}
+            />
+          </div>
+          <p className="assignment-row-meta" style={{ marginTop: 8 }}>
+            Keep this page open until it finishes. Results appear below as each script is graded.
+          </p>
+        </div>
+      )}
 
       {error && <p className="error-text">{error}</p>}
       {notice && <p style={{ color: 'var(--gf-success-text)', fontSize: 13 }}>{notice}</p>}
@@ -408,6 +582,13 @@ export default function ExamWorkspacePage() {
           <div>
             <p className="stat-value">{unmatchedCount}</p>
             <p className="stat-label">Not yet assigned to a student</p>
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-icon" style={{ background: '#efe7fb' }}>💰</div>
+          <div>
+            <p className="stat-value">${usage.cost.toFixed(4)}</p>
+            <p className="stat-label">AI cost so far ({usage.calls} call{usage.calls === 1 ? '' : 's'}, estimate)</p>
           </div>
         </div>
       </div>
@@ -546,9 +727,19 @@ export default function ExamWorkspacePage() {
                     <span className="tag">{STATUS_LABEL[paper.status] || paper.status}</span>
                   </p>
                   <p className="assignment-row-meta">
-                    {student ? student.reg_no : 'The AI will read the name on the first page'} ·{' '}
-                    {paper.exam_paper_pages.length} page{paper.exam_paper_pages.length === 1 ? '' : 's'}
+                    {student
+                      ? student.reg_no
+                      : paper.detected_name || paper.detected_reg_no
+                        ? `AI read: ${[paper.detected_name, paper.detected_reg_no].filter(Boolean).join(' / ')}`
+                        : 'The AI will read the name on the first page'}{' '}
+                    · {paper.exam_paper_pages.length} page{paper.exam_paper_pages.length === 1 ? '' : 's'}
+                    {paper.ai_total !== null && paper.ai_total !== undefined && ` · AI score ${paper.ai_total}/${exam.total_marks}`}
                   </p>
+                  {paper.match_note && !student && <p className="assignment-row-meta">{paper.match_note}</p>}
+                  {paper.page_issues && <p className="assignment-row-meta">Photo issue: {paper.page_issues}</p>}
+                  {paper.status === 'failed' && paper.last_error && (
+                    <p className="error-text" style={{ margin: '4px 0 0 0' }}>{paper.last_error}</p>
+                  )}
                 </div>
 
                 <select
@@ -564,7 +755,24 @@ export default function ExamWorkspacePage() {
                   ))}
                 </select>
 
-                <button type="button" className="btn-danger" style={smallBtn} onClick={() => handleDeletePaper(paper)}>
+                {paper.status === 'failed' && (
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={smallBtn}
+                    disabled={!!grading || retryingId === paper.id}
+                    onClick={() => handleRetry(paper)}
+                  >
+                    {retryingId === paper.id ? 'Retrying...' : 'Retry'}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn-danger"
+                  style={smallBtn}
+                  disabled={paper.status === 'grading' || !!grading}
+                  onClick={() => handleDeletePaper(paper)}
+                >
                   Delete
                 </button>
               </div>
