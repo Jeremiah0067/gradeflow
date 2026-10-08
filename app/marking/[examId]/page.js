@@ -496,6 +496,8 @@ export default function ExamWorkspacePage() {
 
   const draftsWithPages = drafts.filter((d) => d.pages.length > 0).length;
   const gradableCount = papers.filter(isGradable).length;
+  const gradedCount = papers.filter((p) => ['needs_review', 'flagged', 'approved'].includes(p.status)).length;
+  const approvedCount = papers.filter((p) => p.status === 'approved').length;
   const visibleStudents = showMissingOnly ? students.filter((s) => !studentIdsWithScript.has(s.id)) : students;
 
   return (
@@ -561,6 +563,23 @@ export default function ExamWorkspacePage() {
 
       {error && <p className="error-text">{error}</p>}
       {notice && <p style={{ color: 'var(--gf-success-text)', fontSize: 13 }}>{notice}</p>}
+
+      {gradedCount > 0 && (
+        <div className="surface" style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <div className="assignment-icon">✅</div>
+          <div style={{ flex: 1 }}>
+            <p className="assignment-row-title">
+              {gradedCount} script{gradedCount === 1 ? '' : 's'} graded
+            </p>
+            <p className="assignment-row-meta">
+              {gradedCount - approvedCount} waiting for your review · {approvedCount} approved
+            </p>
+          </div>
+          <button type="button" style={{ width: 'auto', marginTop: 0 }} onClick={() => router.push(`/marking/${examId}/review`)}>
+            Review results
+          </button>
+        </div>
+      )}
 
       <div className="stats-row">
         <div className="stat-card">
