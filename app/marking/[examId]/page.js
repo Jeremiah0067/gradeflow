@@ -5,6 +5,8 @@ import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '../../../lib/supabaseClient';
 import { compressImage } from '../../../lib/imageCompress';
+import { estimateBatch, formatUsd } from '../../../lib/estimateCost';
+import { GRADING_MODES } from '../../../lib/gradingModels';
 
 const BUCKET = 'exam-papers';
 const MAX_PAGES_PER_SCRIPT = 20;
@@ -53,7 +55,7 @@ async function fetchAllUsage(examId) {
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await supabase
       .from('exam_ai_usage')
-      .select('est_cost_usd')
+      .select('*')
       .eq('exam_id', examId)
       .order('created_at')
       .order('id')
@@ -110,6 +112,8 @@ export default function ExamWorkspacePage() {
   const [grading, setGrading] = useState(null); // { done, total, failed } while a batch is running
   const [retryingId, setRetryingId] = useState(null);
   const [usage, setUsage] = useState({ calls: 0, cost: 0 });
+  const [measuredOut, setMeasuredOut] = useState({}); // average AI output per script, by model, from real calls
+  const [budgetInput, setBudgetInput] = useState('');
   const cancelRef = useRef(false);
   const gradingRef = useRef(null);
 
@@ -212,6 +216,15 @@ export default function ExamWorkspacePage() {
         calls: usageRows.length,
         cost: usageRows.reduce((sum, r) => sum + (Number(r.est_cost_usd) || 0), 0),
       });
+      const byModel = {};
+      usageRows.forEach((r) => {
+        const out = (Number(r.output_tokens) || 0) + (Number(r.thought_tokens) || 0);
+        byModel[r.model] ||= { sum: 0, n: 0 };
+        byModel[r.model].sum += out;
+        byModel[r.model].n += 1;
+      });
+      setMeasuredOut(Object.fromEntries(Object.entries(byModel).map(([m, v]) => [m, { avg: v.sum / v.n, n: v.n }])));
+      setBudgetInput(examRow.budget_usd === null || examRow.budget_usd === undefined ? '' : String(examRow.budget_usd));
     } catch (err) {
       setError(err.message);
     }
@@ -401,14 +414,83 @@ export default function ExamWorkspacePage() {
   }
 
   // ---------- AI grading ----------
+  const clientEnv = {
+    GEMINI_MODEL: process.env.NEXT_PUBLIC_GEMINI_MODEL,
+    GEMINI_ECONOMY_MODEL: process.env.NEXT_PUBLIC_GEMINI_ECONOMY_MODEL,
+  };
+
+  function estimateFor(targets) {
+    return estimateBatch({
+      exam,
+      questions,
+      pageCounts: targets.map((p) => p.exam_paper_pages.length),
+      mode: exam.grading_mode || 'standard',
+      env: clientEnv,
+      measured: { outputByModel: measuredOut },
+    });
+  }
+
+  async function handleModeChange(mode) {
+    setError('');
+    setNotice('');
+    const { error: updErr } = await supabase.from('exams').update({ grading_mode: mode }).eq('id', examId);
+    if (updErr) {
+      setError(
+        /grading_mode/.test(updErr.message)
+          ? 'The database needs the Phase 7 update first. Run exam_schema_phase7.sql in Supabase, then try again.'
+          : updErr.message
+      );
+      return;
+    }
+    setExam((prev) => ({ ...prev, grading_mode: mode }));
+  }
+
+  async function handleBudgetSave() {
+    setError('');
+    setNotice('');
+    const raw = budgetInput.trim();
+    const value = raw === '' ? null : Number(raw);
+    if (value !== null && (!Number.isFinite(value) || value < 0)) {
+      setError('The spending limit must be a number, zero or more. Leave it empty for no limit.');
+      return;
+    }
+    if (value === (exam.budget_usd === undefined ? null : exam.budget_usd === null ? null : Number(exam.budget_usd))) return;
+    const { error: updErr } = await supabase.from('exams').update({ budget_usd: value }).eq('id', examId);
+    if (updErr) {
+      setError(
+        /budget_usd/.test(updErr.message)
+          ? 'The database needs the Phase 7 update first. Run exam_schema_phase7.sql in Supabase, then try again.'
+          : updErr.message
+      );
+      return;
+    }
+    setExam((prev) => ({ ...prev, budget_usd: value }));
+    setNotice(value === null ? 'Spending limit removed.' : `Spending limit set to ${formatUsd(value)}.`);
+  }
+
   async function handleGradeAll() {
     const targets = papers.filter(isGradable);
     if (targets.length === 0) return;
 
-    const ok = confirm(
-      `Grade ${targets.length} script${targets.length === 1 ? '' : 's'} with AI now?\n\nEach script is one AI call. You can stop at any time.`
-    );
-    if (!ok) return;
+    const estimate = estimateFor(targets);
+    const mode = GRADING_MODES.find((m) => m.id === (exam.grading_mode || 'standard'));
+    const limit = exam.budget_usd === null || exam.budget_usd === undefined ? null : Number(exam.budget_usd);
+
+    const lines = [`Grade ${targets.length} script${targets.length === 1 ? '' : 's'} with AI now?`, '', `Mode: ${mode?.label || 'Standard'}`];
+    if (estimate.known) {
+      lines.push(
+        `Estimated cost: about ${formatUsd(estimate.expected)} (most likely between ${formatUsd(estimate.low)} and ${formatUsd(estimate.high)}).`
+      );
+      if (estimate.escalateTo) lines.push(`This assumes about ${Math.round(estimate.escalationRate * 100)}% of scripts need the stronger model's second look.`);
+    } else {
+      lines.push('Cost estimate unavailable for this model.');
+    }
+    if (limit !== null) {
+      lines.push(`Spending limit: ${formatUsd(limit)} (already spent ${formatUsd(usage.cost)}). Grading stops by itself at the limit.`);
+      if (estimate.known && usage.cost + estimate.expected > limit) lines.push('The estimate is above your limit, so some scripts may not be graded.');
+    }
+    lines.push('', 'You can stop at any time.');
+    if (!confirm(lines.join('\n'))) return;
 
     setError('');
     setNotice('');
@@ -429,6 +511,10 @@ export default function ExamWorkspacePage() {
     const problems = [];
     let done = 0;
     let failed = 0;
+    let skipped = 0;
+    let escalated = 0;
+    let totalCost = 0;
+    let limitMessage = '';
     setGrading({ done: 0, total: ids.length, failed: 0 });
 
     async function worker() {
@@ -436,9 +522,19 @@ export default function ExamWorkspacePage() {
         const id = queue.shift();
         try {
           const result = await callGradeApi(id, false);
-          if (result.ok === false) {
+          if (result.budgetReached) {
+            // Out of budget: stop everyone. Scripts not yet graded stay queued, nothing is lost.
+            skipped += 1;
+            limitMessage = result.error;
+            cancelRef.current = true;
+          } else if (result.ok === false) {
             failed += 1;
             problems.push(result.error);
+          } else if (result.skipped) {
+            skipped += 1;
+          } else {
+            totalCost += Number(result.costUsd) || 0;
+            if (result.escalated) escalated += 1;
           }
         } catch (err) {
           failed += 1;
@@ -453,10 +549,15 @@ export default function ExamWorkspacePage() {
     await Promise.all(Array.from({ length: Math.min(GRADING_CONCURRENCY, ids.length) }, worker));
 
     setGrading(null);
-    const stopped = cancelRef.current && queue.length > 0;
-    setNotice(
-      `${done - failed} graded${failed ? `, ${failed} failed` : ''}${stopped ? `. Stopped early with ${queue.length} left in the queue` : ''}.`
-    );
+    const graded = done - failed - skipped;
+    const notLeftBehind = queue.length;
+    const parts = [`${graded} graded`];
+    if (failed) parts.push(`${failed} failed`);
+    if (escalated) parts.push(`${escalated} re-checked by the stronger model`);
+    let message = `${parts.join(', ')}. Cost about ${formatUsd(totalCost)}${estimate.known ? ` (estimated ${formatUsd(estimate.expected)})` : ''}.`;
+    if (limitMessage) message += ` ${limitMessage}`;
+    else if (cancelRef.current && notLeftBehind > 0) message += ` Stopped early with ${notLeftBehind} left in the queue.`;
+    setNotice(message);
     if (problems.length > 0) setError(`Some scripts failed: ${[...new Set(problems)].slice(0, 3).join(' | ')}`);
     await load(false);
   }
@@ -613,6 +714,55 @@ export default function ExamWorkspacePage() {
       </div>
 
       <div className="surface">
+        <p className="section-heading">Grading settings</p>
+
+        <label style={{ marginTop: 0 }}>Quality and cost</label>
+        <select
+          value={exam.grading_mode || 'standard'}
+          onChange={(e) => handleModeChange(e.target.value)}
+          disabled={!!grading}
+        >
+          {GRADING_MODES.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+        <p className="assignment-row-meta" style={{ margin: '6px 0 0 0' }}>
+          {GRADING_MODES.find((m) => m.id === (exam.grading_mode || 'standard'))?.blurb}
+        </p>
+        {gradableCount > 0 && (() => {
+          const est = estimateFor(papers.filter(isGradable));
+          return est.known ? (
+            <p style={{ fontSize: 13, margin: '10px 0 0 0' }}>
+              Estimated cost to grade the {gradableCount} waiting script{gradableCount === 1 ? '' : 's'}:{' '}
+              <strong>about {formatUsd(est.expected)}</strong>{' '}
+              <span style={{ color: 'var(--gf-text-secondary)' }}>
+                (likely {formatUsd(est.low)} to {formatUsd(est.high)}
+                {est.calibrated ? ', based on your earlier results' : ', a first guess that improves as you grade'})
+              </span>
+            </p>
+          ) : null;
+        })()}
+
+        <label>Spending limit for this job (US dollars, optional)</label>
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          placeholder="No limit"
+          value={budgetInput}
+          onChange={(e) => setBudgetInput(e.target.value)}
+          onBlur={handleBudgetSave}
+          style={{ maxWidth: 200 }}
+        />
+        <p className="assignment-row-meta" style={{ margin: '6px 0 0 0' }}>
+          Grading stops by itself once the logged cost reaches this amount. Spent so far: {formatUsd(usage.cost)}. These are
+          estimates, so check Google&apos;s billing page for the exact amount.
+        </p>
+      </div>
+
+      <div className="surface">
         <p className="section-heading">Add scripts</p>
         <p className="subtitle" style={{ marginBottom: 14 }}>
           One card per student. Add every page of that student&apos;s script, in order. You can choose the student now, or
@@ -753,6 +903,7 @@ export default function ExamWorkspacePage() {
                         : 'The AI will read the name on the first page'}{' '}
                     · {paper.exam_paper_pages.length} page{paper.exam_paper_pages.length === 1 ? '' : 's'}
                     {paper.ai_total !== null && paper.ai_total !== undefined && ` · AI score ${paper.ai_total}/${exam.total_marks}`}
+                    {paper.escalated && ' · re-checked by the stronger model'}
                   </p>
                   {paper.match_note && !student && <p className="assignment-row-meta">{paper.match_note}</p>}
                   {paper.page_issues && <p className="assignment-row-meta">Photo issue: {paper.page_issues}</p>}
