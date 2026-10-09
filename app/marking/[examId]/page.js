@@ -714,7 +714,12 @@ export default function ExamWorkspacePage() {
       </div>
 
       <div className="surface">
-        <p className="section-heading">Grading settings</p>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <p className="section-heading" style={{ margin: 0 }}>Grading settings</p>
+          <button type="button" className="btn-secondary" style={smallBtn} disabled={!!grading} onClick={() => router.push(`/marking/${examId}/edit`)}>
+            Edit questions and marking guide
+          </button>
+        </div>
 
         <label style={{ marginTop: 0 }}>Quality and cost</label>
         <select
@@ -761,6 +766,8 @@ export default function ExamWorkspacePage() {
           estimates, so check Google&apos;s billing page for the exact amount.
         </p>
       </div>
+
+      {/* ======== SPLIT POINT: if you paste in two halves, the second half starts here ======== */}
 
       <div className="surface">
         <p className="section-heading">Add scripts</p>
