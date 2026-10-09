@@ -5,20 +5,8 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '../../../lib/supabaseClient';
 import { parseCsv, guessRosterColumns } from '../../../lib/csv';
-
-let questionCounter = 0;
-function newQuestion(position) {
-  questionCounter += 1;
-  return {
-    key: `q-${questionCounter}`,
-    label: String(position),
-    question_text: '',
-    max_marks: '',
-    question_type: 'written',
-    marking_guide: '',
-    answer_key: '',
-  };
-}
+import QuestionsEditor from '../../../components/marking/QuestionsEditor';
+import { blankQuestion, validateQuestions, totalMarks, questionToColumns } from '../../../lib/questionForm';
 
 const smallBtn = { width: 'auto', margin: 0, padding: '6px 14px', fontSize: 13 };
 
@@ -34,7 +22,7 @@ export default function NewMarkingJobPage() {
   const [classLabel, setClassLabel] = useState('');
   const [paperType, setPaperType] = useState('exam');
   const [extraInstructions, setExtraInstructions] = useState('');
-  const [questions, setQuestions] = useState(() => [newQuestion(1)]);
+  const [questions, setQuestions] = useState(() => [blankQuestion(1)]);
 
   const [csvRows, setCsvRows] = useState([]);
   const [csvFileName, setCsvFileName] = useState('');
@@ -64,10 +52,7 @@ export default function NewMarkingJobPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const totalMarks = useMemo(
-    () => questions.reduce((sum, q) => sum + (Number(q.max_marks) > 0 ? Number(q.max_marks) : 0), 0),
-    [questions]
-  );
+  const total = totalMarks(questions);
 
   // The roster the teacher will actually get, after skipping blanks and duplicate reg numbers
   const roster = useMemo(() => {
@@ -90,18 +75,6 @@ export default function NewMarkingJobPage() {
     });
     return { students, skipped };
   }, [csvRows, regCol, nameCol]);
-
-  function updateQuestion(key, field, value) {
-    setQuestions((prev) => prev.map((q) => (q.key === key ? { ...q, [field]: value } : q)));
-  }
-
-  function addQuestion() {
-    setQuestions((prev) => [...prev, newQuestion(prev.length + 1)]);
-  }
-
-  function removeQuestion(key) {
-    setQuestions((prev) => (prev.length === 1 ? prev : prev.filter((q) => q.key !== key)));
-  }
 
   async function handleCsvFile(e) {
     const file = e.target.files?.[0];
@@ -128,19 +101,8 @@ export default function NewMarkingJobPage() {
   function validate() {
     if (!title.trim()) return 'Give this marking job a title.';
 
-    for (let i = 0; i < questions.length; i++) {
-      const q = questions[i];
-      const n = i + 1;
-      if (!q.label.trim()) return `Question ${n} needs a label (for example 1, 2a).`;
-      if (!q.question_text.trim()) return `Question ${n} needs its question text.`;
-      if (!(Number(q.max_marks) > 0)) return `Question ${n} needs marks greater than 0.`;
-      if (q.question_type === 'objective' && !q.answer_key.trim()) {
-        return `Question ${n} is objective, so it needs the correct answer.`;
-      }
-    }
-
-    const labels = questions.map((q) => q.label.trim().toLowerCase());
-    if (new Set(labels).size !== labels.length) return 'Two questions have the same label. Labels must be different.';
+    const questionProblem = validateQuestions(questions);
+    if (questionProblem) return questionProblem;
 
     if (csvRows.length === 0) return 'Upload the CSV of students who wrote this paper.';
     if (regCol < 0 || nameCol < 0) return 'Choose which CSV columns hold the reg number and the student name.';
@@ -173,25 +135,16 @@ export default function NewMarkingJobPage() {
           class_label: classLabel.trim() || null,
           paper_type: paperType,
           extra_instructions: extraInstructions.trim() || null,
-          total_marks: totalMarks,
+          total_marks: total,
         })
         .select()
         .single();
       if (examErr) throw new Error(examErr.message);
       examId = exam.id;
 
-      const { error: qErr } = await supabase.from('exam_questions').insert(
-        questions.map((q, i) => ({
-          exam_id: examId,
-          position: i + 1,
-          label: q.label.trim(),
-          question_text: q.question_text.trim(),
-          max_marks: Number(q.max_marks),
-          question_type: q.question_type,
-          marking_guide: q.marking_guide.trim() || null,
-          answer_key: q.question_type === 'objective' ? q.answer_key.trim() : null,
-        }))
-      );
+      const { error: qErr } = await supabase
+        .from('exam_questions')
+        .insert(questions.map((q, i) => ({ ...questionToColumns(q), exam_id: examId, position: i + 1 })));
       if (qErr) throw new Error(qErr.message);
 
       // Insert the roster in chunks so a big class doesn't hit a request size limit
@@ -264,87 +217,14 @@ export default function NewMarkingJobPage() {
           />
         </div>
 
-        <div className="surface">
-          <p className="section-heading">2. Questions and marking scheme</p>
-
-          {questions.map((q, i) => (
-            <div
-              key={q.key}
-              style={{ border: '1px solid var(--gf-border)', borderRadius: 8, padding: 14, marginBottom: 12 }}
-            >
-              <div style={{ display: 'grid', gridTemplateColumns: '90px 110px 1fr auto', gap: 12, alignItems: 'end' }}>
-                <div>
-                  <label style={{ marginTop: 0 }}>Label</label>
-                  <input value={q.label} onChange={(e) => updateQuestion(q.key, 'label', e.target.value)} />
-                </div>
-                <div>
-                  <label style={{ marginTop: 0 }}>Marks</label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.5"
-                    value={q.max_marks}
-                    onChange={(e) => updateQuestion(q.key, 'max_marks', e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label style={{ marginTop: 0 }}>Type</label>
-                  <select value={q.question_type} onChange={(e) => updateQuestion(q.key, 'question_type', e.target.value)}>
-                    <option value="written">Written (AI marks it)</option>
-                    <option value="objective">Objective (fixed answer)</option>
-                  </select>
-                </div>
-                <button
-                  type="button"
-                  className="btn-danger"
-                  style={smallBtn}
-                  disabled={questions.length === 1}
-                  onClick={() => removeQuestion(q.key)}
-                >
-                  Remove
-                </button>
-              </div>
-
-              <label>Question {i + 1} text</label>
-              <textarea
-                rows={2}
-                value={q.question_text}
-                onChange={(e) => updateQuestion(q.key, 'question_text', e.target.value)}
-                placeholder="Type the question as it appears on the paper"
-              />
-
-              {q.question_type === 'objective' ? (
-                <>
-                  <label>Correct answer</label>
-                  <input
-                    value={q.answer_key}
-                    onChange={(e) => updateQuestion(q.key, 'answer_key', e.target.value)}
-                    placeholder="e.g. B, or 42"
-                  />
-                </>
-              ) : (
-                <>
-                  <label>What a full-marks answer should contain (optional but recommended)</label>
-                  <textarea
-                    rows={2}
-                    value={q.marking_guide}
-                    onChange={(e) => updateQuestion(q.key, 'marking_guide', e.target.value)}
-                    placeholder="Key points, steps, or the expected answer. e.g. 1 mark for the formula, 2 marks for the working, 1 mark for the final answer."
-                  />
-                </>
-              )}
-            </div>
-          ))}
-
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <button type="button" className="btn-secondary" style={smallBtn} onClick={addQuestion}>
-              + Add question
-            </button>
-            <p className="assignment-row-meta" style={{ margin: 0 }}>
-              Total: <strong>{totalMarks}</strong> marks
-            </p>
-          </div>
-        </div>
+        <QuestionsEditor
+          questions={questions}
+          setQuestions={setQuestions}
+          onMeta={({ title: t, subject: sub }) => {
+            if (t && !title.trim()) setTitle(t);
+            if (sub && !subject.trim()) setSubject(sub);
+          }}
+        />
 
         <div className="surface">
           <p className="section-heading">3. Students who wrote this paper</p>
