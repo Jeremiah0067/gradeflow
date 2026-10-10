@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '../../../../lib/supabaseClient';
@@ -12,29 +12,17 @@ import {
   BULK_MIN_MEAN,
 } from '../../../../lib/reviewHelpers';
 import { toCsv } from '../../../../lib/csv';
+import { Icon } from '../../../../components/icons';
+import PenScore from '../../../../components/ui/PenScore';
 import { buildExportTable, downloadCsv, exportFileName } from '../../../../lib/exportResults';
 
 const BUCKET = 'exam-papers';
 const GRADED = ['needs_review', 'flagged', 'approved'];
-const smallBtn = { width: 'auto', margin: 0, padding: '6px 14px', fontSize: 13 };
-
-const STATUS_LABEL = { needs_review: 'To review', flagged: 'Check carefully', approved: 'Approved' };
-
-const CSS = `
-.rv-layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 16px; align-items: start; }
-.rv-list { max-height: 78vh; overflow-y: auto; }
-.rv-detail { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 16px; align-items: start; }
-.rv-pages { position: sticky; top: 12px; max-height: 88vh; overflow-y: auto; }
-.rv-pages img { width: 100%; display: block; border: 1px solid var(--gf-border); border-radius: 6px; margin-bottom: 8px; cursor: zoom-in; }
-.rv-item { padding: 10px 12px; border-bottom: 1px solid var(--gf-border); cursor: pointer; border-left: 3px solid transparent; }
-.rv-item:hover { background: var(--gf-bg); }
-.rv-item.selected { background: #e8f0fe; border-left-color: var(--gf-blue); }
-@media (max-width: 960px) {
-  .rv-layout, .rv-detail { grid-template-columns: minmax(0, 1fr); }
-  .rv-list { max-height: 260px; }
-  .rv-pages { position: static; max-height: none; }
-}
-`;
+const STATUS_CHIP = {
+  needs_review: { label: 'To review', cls: 'chip-blue' },
+  flagged: { label: 'Check carefully', cls: 'chip-amber' },
+  approved: { label: 'Approved', cls: 'chip-green' },
+};
 
 async function fetchPaged(makeQuery) {
   const all = [];
@@ -64,20 +52,7 @@ async function callGradeApi(paperId, force) {
 function ConfidenceBadge({ value }) {
   const pct = Math.round(Number(value ?? 0) * 100);
   const low = Number(value ?? 0) < LOW_CONFIDENCE;
-  return (
-    <span
-      style={{
-        fontSize: 12,
-        padding: '2px 8px',
-        borderRadius: 10,
-        background: low ? 'var(--gf-warning-bg)' : 'var(--gf-success-bg)',
-        color: low ? 'var(--gf-warning-text)' : 'var(--gf-success-text)',
-        whiteSpace: 'nowrap',
-      }}
-    >
-      {pct}% sure
-    </span>
-  );
+  return <span className={`chip ${low ? 'chip-amber' : 'chip-green'} num`}>{pct}% sure</span>;
 }
 
 export default function ReviewPage() {
@@ -458,6 +433,16 @@ export default function ReviewPage() {
     return buildExportTable({ exam, questions, students, papers: exportData.papers, scores: exportData.scores, options: exportOpts });
   }, [exportData, exportOpts, exam, questions, students]);
 
+  const openedFromLink = useRef(false);
+  useEffect(() => {
+    if (loading || !exam || openedFromLink.current) return;
+    if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('export') === '1') {
+      openedFromLink.current = true;
+      openExport();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, exam]);
+
   if (loading) {
     return (
       <div className="page-wide">
@@ -478,122 +463,75 @@ export default function ReviewPage() {
   }
 
   const isApproved = selected?.status === 'approved';
+  const idx = selected ? visiblePapers.findIndex((p) => p.id === selected.id) : -1;
+  const prevId = idx > 0 ? visiblePapers[idx - 1].id : null;
+  const nextId = idx >= 0 && idx < visiblePapers.length - 1 ? visiblePapers[idx + 1].id : null;
   const tabButton = (key, label, count) => (
-    <button
-      type="button"
-      className={tab === key ? undefined : 'btn-secondary'}
-      style={{ ...smallBtn, marginRight: 6 }}
-      onClick={() => setTab(key)}
-    >
-      {label} ({count})
+    <button type="button" aria-pressed={tab === key} onClick={() => setTab(key)}>
+      {label} <span className="num">{count}</span>
     </button>
   );
+  const sum = exportTable?.summary;
 
   return (
-    <div className="page-wide" style={{ maxWidth: 1280 }}>
-      <style>{CSS}</style>
-
+    <div className="page-wide" style={{ maxWidth: 1360 }}>
       <div className="breadcrumb">
-        <Link href="/dashboard">Dashboard</Link> / <Link href="/marking">Marking</Link> /{' '}
-        <Link href={`/marking/${examId}`}>{exam.title}</Link> / Review
+        <Link href="/marking">Marking</Link> / <Link href={`/marking/${examId}`}>{exam.title}</Link> / Review
       </div>
 
-      <div className="main-header" style={{ marginBottom: 12 }}>
+      <div className="page-head">
         <div>
-          <h1>Review: {exam.title}</h1>
-          <p className="subtitle" style={{ marginBottom: 0 }}>
-            {counts.approved} of {counts.all} graded scripts approved · out of {exam.total_marks} marks
+          <h1>Review</h1>
+          <p className="subtitle num">
+            {counts.approved} of {counts.all} graded scripts approved, out of {exam.total_marks} marks
           </p>
         </div>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-        <button
-          type="button"
-          className="btn-secondary"
-          style={{ width: 'auto', marginTop: 0 }}
-          disabled={busy || exportBusy}
-          onClick={exportOpen ? () => setExportOpen(false) : openExport}
-        >
-          {exportOpen ? 'Close export' : 'Export CSV'}
-        </button>
-        <button
-          type="button"
-          style={{ width: 'auto', marginTop: 0 }}
-          disabled={bulkEligible.length === 0 || busy}
-          onClick={handleBulkApprove}
-          title="Approves only scripts the AI was clearly confident about"
-        >
-          {bulkEligible.length === 0 ? 'No confident scripts to bulk approve' : `Approve ${bulkEligible.length} confident script${bulkEligible.length === 1 ? '' : 's'}`}
-        </button>
+        <div className="page-head-actions">
+          <button type="button" className="btn-secondary" disabled={busy || exportBusy} onClick={exportOpen ? () => setExportOpen(false) : openExport}>
+            <Icon name="download" size={18} />
+            {exportOpen ? 'Close export' : 'Export CSV'}
+          </button>
+          <button type="button" disabled={bulkEligible.length === 0 || busy} onClick={handleBulkApprove} title="Approves only scripts the AI was clearly confident about">
+            <Icon name="check" size={18} />
+            {bulkEligible.length === 0 ? 'No confident scripts to approve' : `Approve ${bulkEligible.length} confident`}
+          </button>
         </div>
       </div>
 
-      {error && <p className="error-text">{error}</p>}
-      {notice && <p style={{ color: 'var(--gf-success-text)', fontSize: 13 }}>{notice}</p>}
+      {error && <p className="alert alert-error" role="alert">{error}</p>}
+      {notice && <p className="alert alert-ok" role="status">{notice}</p>}
 
       {exportOpen && (
-        <div className="surface" style={{ marginBottom: 16 }}>
-          <p className="section-heading">Export results</p>
-
+        <div className="surface">
+          <h2>Export results</h2>
           {!exportTable ? (
-            <p className="assignment-row-meta">Loading the latest results...</p>
+            <p className="section-note">Loading the latest results...</p>
           ) : (
             <>
-              <p className="assignment-row-title" style={{ marginBottom: 6 }}>
-                {exportTable.summary.approved} of {exportTable.summary.rosterSize} students have an approved score
+              <p className="row-title num" style={{ marginBottom: 'var(--s-3)' }}>
+                {sum.approved} of {sum.rosterSize} students have an approved score
               </p>
-              {exportTable.summary.awaiting > 0 && (
-                <p style={{ color: 'var(--gf-warning-text)', fontSize: 13, margin: '2px 0' }}>
-                  {exportTable.summary.awaiting} script{exportTable.summary.awaiting === 1 ? ' is' : 's are'} graded but not
-                  approved yet.
-                </p>
-              )}
-              {exportTable.summary.notGraded + exportTable.summary.failed > 0 && (
-                <p style={{ color: 'var(--gf-warning-text)', fontSize: 13, margin: '2px 0' }}>
-                  {exportTable.summary.notGraded + exportTable.summary.failed} uploaded script
-                  {exportTable.summary.notGraded + exportTable.summary.failed === 1 ? ' has' : 's have'} not been graded.
-                </p>
-              )}
-              {exportTable.summary.noScript > 0 && (
-                <p style={{ color: 'var(--gf-warning-text)', fontSize: 13, margin: '2px 0' }}>
-                  {exportTable.summary.noScript} student{exportTable.summary.noScript === 1 ? ' has' : 's have'} no script uploaded.
-                </p>
-              )}
-              {exportTable.summary.unassignedScripts > 0 && (
-                <p style={{ color: 'var(--gf-warning-text)', fontSize: 13, margin: '2px 0' }}>
-                  {exportTable.summary.unassignedScripts} uploaded script{exportTable.summary.unassignedScripts === 1 ? ' is' : 's are'} not
-                  assigned to a student, so cannot be exported.
-                </p>
-              )}
+              {sum.awaiting > 0 && <p className="alert alert-warn">{sum.awaiting} {sum.awaiting === 1 ? 'script is' : 'scripts are'} graded but not approved yet.</p>}
+              {sum.notGraded + sum.failed > 0 && <p className="alert alert-warn">{sum.notGraded + sum.failed} uploaded {sum.notGraded + sum.failed === 1 ? 'script has' : 'scripts have'} not been graded.</p>}
+              {sum.noScript > 0 && <p className="alert alert-warn">{sum.noScript} {sum.noScript === 1 ? 'student has' : 'students have'} no script uploaded.</p>}
+              {sum.unassignedScripts > 0 && <p className="alert alert-warn">{sum.unassignedScripts} uploaded {sum.unassignedScripts === 1 ? 'script is' : 'scripts are'} not assigned to a student, so cannot be exported.</p>}
 
-              <div style={{ margin: '12px 0' }}>
+              <div style={{ margin: 'var(--s-3) 0 var(--s-4)' }}>
                 {[
                   ['includeMissing', 'Include students without an approved score (listed with a status, so nobody goes missing)'],
                   ['perQuestion', 'Show the marks for each question'],
                   ['comments', 'Include my comments'],
                 ].map(([key, label]) => (
-                  <label key={key} style={{ display: 'flex', alignItems: 'center', margin: '6px 0', fontWeight: 400 }}>
-                    <input
-                      type="checkbox"
-                      checked={exportOpts[key]}
-                      onChange={(e) => setExportOpts((prev) => ({ ...prev, [key]: e.target.checked }))}
-                      style={{ width: 'auto', margin: '0 8px 0 0' }}
-                    />
+                  <label key={key} className="checkline">
+                    <input type="checkbox" checked={exportOpts[key]} onChange={(e) => setExportOpts((prev) => ({ ...prev, [key]: e.target.checked }))} />
                     {label}
                   </label>
                 ))}
               </div>
 
-              <button
-                type="button"
-                style={{ width: 'auto', margin: 0 }}
-                disabled={exportBusy || exportTable.rows.length === 0}
-                onClick={handleDownload}
-              >
-                {exportBusy
-                  ? 'Preparing...'
-                  : exportTable.rows.length === 0
-                    ? 'Nothing to export yet'
-                    : `Download CSV (${exportTable.rows.length} row${exportTable.rows.length === 1 ? '' : 's'})`}
+              <button type="button" disabled={exportBusy || exportTable.rows.length === 0} onClick={handleDownload}>
+                <Icon name="download" size={18} />
+                {exportBusy ? 'Preparing...' : exportTable.rows.length === 0 ? 'Nothing to export yet' : `Download CSV (${exportTable.rows.length} ${exportTable.rows.length === 1 ? 'row' : 'rows'})`}
               </button>
             </>
           )}
@@ -601,149 +539,151 @@ export default function ReviewPage() {
       )}
 
       {papers.length === 0 ? (
-        <div className="surface" style={{ textAlign: 'center', padding: 40 }}>
-          <p className="assignment-row-title">Nothing to review yet</p>
-          <p className="subtitle">Grade some scripts first, then they will appear here.</p>
-          <button type="button" style={{ width: 'auto' }} onClick={() => router.push(`/marking/${examId}`)}>
-            Back to scripts
-          </button>
+        <div className="surface">
+          <div className="empty">
+            <span className="empty-icon"><Icon name="check" size={26} /></span>
+            <h2>Nothing to review yet</h2>
+            <p>Grade some scripts first, then they will appear here for you to check.</p>
+            <button type="button" onClick={() => router.push(`/marking/${examId}`)}>Back to scripts</button>
+          </div>
         </div>
       ) : (
         <div className="rv-layout">
-          {/* ---------- left: list of scripts ---------- */}
-          <div className="surface" style={{ padding: 0 }}>
-            <div style={{ padding: 12, borderBottom: '1px solid var(--gf-border)' }}>
+          {/* ---------- the list of scripts ---------- */}
+          <aside>
+            <div className="seg" style={{ width: '100%', marginBottom: 'var(--s-3)' }}>
               {tabButton('todo', 'To review', counts.todo)}
               {tabButton('approved', 'Approved', counts.approved)}
               {tabButton('all', 'All', counts.all)}
             </div>
-            <div className="rv-list">
+            <div className="rows rv-list">
               {visiblePapers.length === 0 ? (
-                <p style={{ padding: 12, margin: 0, fontSize: 13, color: 'var(--gf-text-secondary)' }}>
-                  {tab === 'todo' ? 'Everything is approved. 🎉' : 'Nothing here.'}
+                <p className="section-note" style={{ padding: 'var(--s-4)', margin: 0 }}>
+                  {tab === 'todo' ? 'Everything is approved.' : 'Nothing here.'}
                 </p>
               ) : (
-                visiblePapers.map((p) => (
-                  <div
-                    key={p.id}
-                    className={`rv-item${p.id === selectedId ? ' selected' : ''}`}
-                    onClick={() => selectPaper(p.id)}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                      <strong style={{ fontSize: 14 }}>{nameOf(p)}</strong>
-                      <span style={{ fontSize: 13 }}>
-                        {p.final_total ?? p.ai_total ?? 0}/{exam.total_marks}
+                visiblePapers.map((p) => {
+                  const chip = STATUS_CHIP[p.status];
+                  return (
+                    <button key={p.id} type="button" className={`rv-item${p.id === selectedId ? ' selected' : ''}`} onClick={() => selectPaper(p.id)}>
+                      <span className="rv-item-top">
+                        <span>{nameOf(p)}</span>
+                        <span className="num">{p.final_total ?? p.ai_total ?? 0}/{exam.total_marks}</span>
                       </span>
-                    </div>
-                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4, flexWrap: 'wrap' }}>
-                      <span className="tag">{STATUS_LABEL[p.status]}</span>
-                      <ConfidenceBadge value={p.ai_confidence} />
-                      {!p.student_id && <span style={{ fontSize: 12, color: 'var(--gf-warning-text)' }}>No student</span>}
-                    </div>
-                  </div>
-                ))
+                      <span className="rv-item-sub">
+                        <span className={`chip ${chip.cls}`}>{chip.label}</span>
+                        {!p.student_id && <span className="chip chip-amber">No student</span>}
+                        <ConfidenceBadge value={p.ai_confidence} />
+                      </span>
+                    </button>
+                  );
+                })
               )}
             </div>
-          </div>
+          </aside>
 
-          {/* ---------- right: the selected script ---------- */}
+          {/* ---------- the selected script ---------- */}
           {selected ? (
-            <div>
-              <div className="surface" style={{ marginBottom: 16 }}>
-                <div style={{ display: 'flex', gap: 16, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-                  <div style={{ flex: 1, minWidth: 240 }}>
-                    <label style={{ marginTop: 0 }}>Student</label>
-                    <select
-                      value={draftStudentId}
-                      onChange={(e) => setDraftStudentId(e.target.value)}
-                      disabled={busy}
-                      style={!draftStudentId ? { borderColor: 'var(--gf-warning-text)' } : undefined}
-                    >
-                      <option value="">Not assigned. Choose a student</option>
-                      {pickableStudents.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.full_name} ({s.reg_no})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div style={{ textAlign: 'right' }}>
-                    <p className="assignment-row-meta" style={{ margin: 0 }}>
-                      AI gave {selected.ai_total ?? 0} · you have given
-                    </p>
-                    <p style={{ margin: 0, fontSize: 26, fontWeight: 600 }}>
-                      {liveTotal === null ? '?' : liveTotal}
-                      <span style={{ fontSize: 15, fontWeight: 400, color: 'var(--gf-text-secondary)' }}> / {exam.total_marks}</span>
-                    </p>
-                  </div>
+            <div style={{ minWidth: 0 }}>
+              <div className="rv-bar">
+                <div className="rv-nav">
+                  <button type="button" className="btn-secondary btn-sm" disabled={!prevId} onClick={() => selectPaper(prevId)} aria-label="Previous script">
+                    <Icon name="chevronLeft" size={18} />
+                  </button>
+                  <button type="button" className="btn-secondary btn-sm" disabled={!nextId} onClick={() => selectPaper(nextId)} aria-label="Next script">
+                    <Icon name="chevronRight" size={18} />
+                  </button>
                 </div>
-
-                {!draftStudentId && (
-                  <p style={{ color: 'var(--gf-warning-text)', fontSize: 13, margin: '10px 0 0 0' }}>
-                    Who is this?{' '}
-                    {selected.detected_name || selected.detected_reg_no
-                      ? `The AI read: ${[selected.detected_name, selected.detected_reg_no].filter(Boolean).join(' / ')}. `
-                      : ''}
-                    {selected.match_note || ''}
+                <div className="rv-who">
+                  <h2 style={{ margin: 0, fontSize: '1.125rem' }}>{nameOf(selected)}</h2>
+                  <p className="meta num" style={{ marginTop: 2 }}>
+                    <span>{idx + 1} of {visiblePapers.length}</span>
+                    {studentById[selected.student_id] && <span>{studentById[selected.student_id].reg_no}</span>}
+                    {selected.escalated && <span>Re-checked by the stronger model</span>}
                   </p>
-                )}
-                {selected.page_issues && (
-                  <p style={{ color: 'var(--gf-warning-text)', fontSize: 13, margin: '10px 0 0 0' }}>
-                    Photo problem reported by the AI: {selected.page_issues}
-                  </p>
+                </div>
+                <label className="rv-jump visually-hidden" htmlFor="rv-jump">Jump to script</label>
+                <select id="rv-jump" className="rv-jump" value={selected.id} onChange={(e) => selectPaper(e.target.value)} style={{ minHeight: 40, maxWidth: 220 }}>
+                  {visiblePapers.map((p) => (
+                    <option key={p.id} value={p.id}>{nameOf(p)}</option>
+                  ))}
+                </select>
+                <PenScore value={liveTotal === null ? '?' : liveTotal} outOf={exam.total_marks} />
+                {isApproved ? (
+                  <span className="chip chip-green"><Icon name="check" size={14} strokeWidth={3} /> Approved</span>
+                ) : (
+                  <button type="button" disabled={busy} onClick={() => saveCurrent(true)}>
+                    {busy ? 'Saving...' : 'Approve and next'}
+                  </button>
                 )}
               </div>
 
+              {(!draftStudentId || selected.page_issues) && (
+                <div style={{ marginBottom: 'var(--s-4)' }}>
+                  {!draftStudentId && (
+                    <p className="alert alert-warn">
+                      <span>
+                        <strong>Who is this?</strong>{' '}
+                        {selected.detected_name || selected.detected_reg_no
+                          ? `The AI read \u201C${[selected.detected_name, selected.detected_reg_no].filter(Boolean).join(', ')}\u201D on the first page. `
+                          : ''}
+                        {selected.match_note || 'Choose the student below before approving.'}
+                      </span>
+                    </p>
+                  )}
+                  {selected.page_issues && (
+                    <p className="alert alert-warn"><span><strong>Photo problem.</strong> {selected.page_issues}</span></p>
+                  )}
+                </div>
+              )}
+
               <div className="rv-detail">
-                {/* photos */}
                 <div className="rv-pages">
                   {pageUrls.length === 0 ? (
-                    <p className="assignment-row-meta">Loading photos...</p>
+                    <p className="section-note" style={{ margin: 0 }}>Loading photos...</p>
                   ) : (
                     pageUrls.map((url, i) => (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img key={url} src={url} alt={`Page ${i + 1}`} onClick={() => window.open(url, '_blank')} />
+                      <img key={url} src={url} alt={`Page ${i + 1} of the script`} onClick={() => window.open(url, '_blank')} />
                     ))
                   )}
-                  <p className="assignment-row-meta">Click a page to open it full size.</p>
+                  <p className="hint" style={{ margin: 0 }}>Click a page to open it full size.</p>
                 </div>
 
-                {/* marks */}
                 <div>
+                  <label htmlFor="rv-student" style={{ marginTop: 0 }}>Student</label>
+                  <select id="rv-student" value={draftStudentId} onChange={(e) => setDraftStudentId(e.target.value)} disabled={busy} style={{ marginBottom: 'var(--s-4)' }}>
+                    <option value="">Not assigned. Choose a student</option>
+                    {pickableStudents.map((st) => (
+                      <option key={st.id} value={st.id}>{st.full_name} ({st.reg_no})</option>
+                    ))}
+                  </select>
+
                   {questions.map((q) => {
-                    const s = scoreByQuestion[q.id];
-                    const changed = s && Number(draftMarks[q.id]) !== Number(s.ai_marks);
+                    const sc = scoreByQuestion[q.id];
+                    const changed = sc && Number(draftMarks[q.id]) !== Number(sc.ai_marks);
+                    const shaky = sc && Number(sc.confidence ?? 0) < LOW_CONFIDENCE;
                     return (
-                      <div key={q.id} className="surface" style={{ marginBottom: 12, padding: 16 }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                          <strong>Question {q.label}</strong>
-                          {s && <ConfidenceBadge value={s.confidence} />}
+                      <div key={q.id} className={`qmark${shaky ? ' is-shaky' : ''}`}>
+                        <div className="qmark-head">
+                          <h3 style={{ margin: 0 }}>Question {q.label}</h3>
+                          {sc && <ConfidenceBadge value={sc.confidence} />}
                         </div>
-                        <p className="assignment-row-meta" style={{ margin: '4px 0 8px 0' }}>{q.question_text}</p>
+                        <p className="qmark-q">{q.question_text}</p>
 
                         {q.question_type === 'objective' ? (
-                          <p style={{ fontSize: 13, margin: '0 0 8px 0' }}>
-                            Student answered: <strong>{s?.student_answer || 'nothing'}</strong> · Correct answer:{' '}
-                            <strong>{q.answer_key}</strong>
+                          <p className="qmark-says">
+                            <span>Student answered </span><strong>{sc?.student_answer || 'nothing'}</strong>
+                            <span>. Correct answer is </span><strong>{q.answer_key}</strong>
                           </p>
                         ) : (
                           <>
-                            {s?.evidence && (
-                              <p style={{ fontSize: 13, margin: '0 0 4px 0' }}>
-                                <span style={{ color: 'var(--gf-text-secondary)' }}>The student wrote: </span>
-                                {s.evidence}
-                              </p>
-                            )}
-                            {s?.reasoning && (
-                              <p style={{ fontSize: 13, margin: '0 0 8px 0' }}>
-                                <span style={{ color: 'var(--gf-text-secondary)' }}>Why this mark: </span>
-                                {s.reasoning}
-                              </p>
-                            )}
+                            {sc?.evidence && <p className="qmark-says"><span>The student wrote: </span>{sc.evidence}</p>}
+                            {sc?.reasoning && <p className="qmark-says"><span>Why this mark: </span>{sc.reasoning}</p>}
                           </>
                         )}
 
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <div className="qmark-entry">
                           <input
                             type="number"
                             min="0"
@@ -752,61 +692,31 @@ export default function ReviewPage() {
                             value={draftMarks[q.id] ?? ''}
                             disabled={busy}
                             onChange={(e) => setMarks(q.id, e.target.value)}
-                            style={{ width: 90, margin: 0 }}
-                            aria-label={`Marks for question ${q.label}`}
+                            aria-label={`Marks for question ${q.label}, out of ${q.max_marks}`}
                           />
-                          <span style={{ fontSize: 13 }}>/ {q.max_marks}</span>
-                          <button type="button" className="btn-secondary" style={smallBtn} disabled={busy} onClick={() => setMarks(q.id, '0')}>
-                            0
-                          </button>
-                          <button
-                            type="button"
-                            className="btn-secondary"
-                            style={smallBtn}
-                            disabled={busy}
-                            onClick={() => setMarks(q.id, String(q.max_marks))}
-                          >
-                            Full
-                          </button>
-                          {changed && (
-                            <span style={{ fontSize: 12, color: 'var(--gf-warning-text)' }}>AI gave {s.ai_marks}</span>
-                          )}
+                          <span className="num">/ {q.max_marks}</span>
+                          <button type="button" className="btn-secondary btn-sm" disabled={busy} onClick={() => setMarks(q.id, '0')}>0</button>
+                          <button type="button" className="btn-secondary btn-sm" disabled={busy} onClick={() => setMarks(q.id, String(q.max_marks))}>Full</button>
+                          {changed && <span className="chip chip-amber num">AI gave {sc.ai_marks}</span>}
                         </div>
                       </div>
                     );
                   })}
 
-                  <div className="surface" style={{ padding: 16 }}>
-                    <label style={{ marginTop: 0 }}>Comment for the student (optional)</label>
-                    <textarea
-                      rows={2}
-                      value={draftComment}
-                      disabled={busy}
-                      onChange={(e) => setDraftComment(e.target.value)}
-                      placeholder="e.g. Good method, but check your units."
-                    />
+                  <div className="qmark">
+                    <label htmlFor="rv-comment" style={{ marginTop: 0 }}>Comment for the student <span className="hint" style={{ display: 'inline' }}>(optional)</span></label>
+                    <textarea id="rv-comment" rows={2} value={draftComment} disabled={busy} onChange={(e) => setDraftComment(e.target.value)} placeholder="e.g. Good method, but check your units." />
 
-                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 14 }}>
+                    <div style={{ display: 'flex', gap: 'var(--s-2)', flexWrap: 'wrap', marginTop: 'var(--s-4)' }}>
                       {isApproved ? (
                         <>
-                          <button type="button" style={{ width: 'auto', margin: 0 }} disabled={busy || !dirty} onClick={() => saveCurrent(false)}>
-                            Save changes
-                          </button>
-                          <button type="button" className="btn-secondary" style={{ width: 'auto', margin: 0 }} disabled={busy} onClick={handleUnapprove}>
-                            Unapprove
-                          </button>
+                          <button type="button" disabled={busy || !dirty} onClick={() => saveCurrent(false)}>Save changes</button>
+                          <button type="button" className="btn-secondary" disabled={busy} onClick={handleUnapprove}>Unapprove</button>
                         </>
                       ) : (
                         <>
-                          <button type="button" style={{ width: 'auto', margin: 0 }} disabled={busy} onClick={() => saveCurrent(true)}>
-                            {busy ? 'Saving...' : 'Approve and next'}
-                          </button>
-                          <button type="button" className="btn-secondary" style={{ width: 'auto', margin: 0 }} disabled={busy || !dirty} onClick={() => saveCurrent(false)}>
-                            Save without approving
-                          </button>
-                          <button type="button" className="btn-secondary" style={{ width: 'auto', margin: 0 }} disabled={busy} onClick={handleRegrade}>
-                            Grade again with AI
-                          </button>
+                          <button type="button" className="btn-secondary" disabled={busy || !dirty} onClick={() => saveCurrent(false)}>Save without approving</button>
+                          <button type="button" className="btn-quiet" disabled={busy} onClick={handleRegrade}>Grade again with AI</button>
                         </>
                       )}
                     </div>
@@ -815,9 +725,7 @@ export default function ReviewPage() {
               </div>
             </div>
           ) : (
-            <div className="surface">
-              <p className="subtitle" style={{ margin: 0 }}>Choose a script on the left.</p>
-            </div>
+            <div className="surface"><p className="section-note" style={{ margin: 0 }}>Choose a script on the left.</p></div>
           )}
         </div>
       )}
