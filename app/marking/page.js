@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '../../lib/supabaseClient';
+import { Icon } from '../../components/icons';
 
 const TYPE_LABEL = { test: 'Test', assignment: 'Assignment', exam: 'Exam' };
 
@@ -55,88 +56,100 @@ export default function MarkingHubPage() {
 
     setExams(examRows || []);
 
-    // Count students and papers for each exam (head:true means "just count, don't download rows")
+    // head:true means "just count, don't download the rows"
+    const countOf = (table, examId, statuses) => {
+      let q = supabase.from(table).select('id', { count: 'exact', head: true }).eq('exam_id', examId);
+      if (statuses) q = q.in('status', statuses);
+      return q.then((r) => r.count || 0);
+    };
     const entries = await Promise.all(
       (examRows || []).map(async (exam) => {
-        const [{ count: students }, { count: papers }, { count: toReview }] = await Promise.all([
-          supabase.from('exam_students').select('id', { count: 'exact', head: true }).eq('exam_id', exam.id),
-          supabase.from('exam_papers').select('id', { count: 'exact', head: true }).eq('exam_id', exam.id),
-          supabase
-            .from('exam_papers')
-            .select('id', { count: 'exact', head: true })
-            .eq('exam_id', exam.id)
-            .eq('status', 'needs_review'),
+        const [students, papers, toReview, approved] = await Promise.all([
+          countOf('exam_students', exam.id),
+          countOf('exam_papers', exam.id),
+          countOf('exam_papers', exam.id, ['needs_review', 'flagged']),
+          countOf('exam_papers', exam.id, ['approved']),
         ]);
-        return [exam.id, { students: students || 0, papers: papers || 0, toReview: toReview || 0 }];
+        return [exam.id, { students, papers, toReview, approved }];
       })
     );
     setCounts(Object.fromEntries(entries));
     setLoading(false);
   }
 
-  if (loading) {
-    return (
-      <div className="page-wide">
-        <p>Loading...</p>
-      </div>
-    );
-  }
-
   return (
     <div className="page-wide">
-      <div className="breadcrumb">
-        <Link href="/dashboard">Dashboard</Link> / Marking
-      </div>
-
-      <div className="main-header" style={{ padding: 0, marginBottom: 20 }}>
+      <div className="page-head">
         <div>
           <h1>Marking</h1>
-          <p className="subtitle" style={{ marginBottom: 0 }}>
-            Photograph handwritten tests, assignments and exams. The AI grades them in one batch, then you approve.
-          </p>
+          <p className="subtitle">Photograph handwritten papers, let the AI mark them in one batch, then check and export the scores.</p>
         </div>
-        <button type="button" style={{ width: 'auto', marginTop: 0 }} onClick={() => router.push('/marking/new')}>
-          + New marking job
-        </button>
+        {exams.length > 0 && (
+          <button type="button" onClick={() => router.push('/marking/new')}>
+            <Icon name="plus" size={18} />
+            New marking job
+          </button>
+        )}
       </div>
 
-      {error && <p className="error-text">{error}</p>}
+      {error && (
+        <p className="alert alert-error" role="alert">
+          {error}
+        </p>
+      )}
 
-      {exams.length === 0 ? (
-        <div className="surface" style={{ textAlign: 'center', padding: 40 }}>
-          <p style={{ fontSize: 32, margin: '0 0 8px 0' }}>✍️</p>
-          <p className="assignment-row-title">No marking jobs yet</p>
-          <p className="subtitle">
-            Create one with your questions, a marking scheme and a CSV of the students who wrote it.
-          </p>
-          <button type="button" style={{ width: 'auto' }} onClick={() => router.push('/marking/new')}>
-            Create your first marking job
-          </button>
+      {loading ? (
+        <p className="subtitle">Loading your marking jobs...</p>
+      ) : exams.length === 0 ? (
+        <div className="surface">
+          <div className="empty">
+            <span className="empty-icon">
+              <Icon name="pen" size={26} />
+            </span>
+            <h2>Mark a whole stack of scripts in one go</h2>
+            <p>
+              Set up the questions, photograph the scripts, and review the AI&apos;s marks. You finish with a spreadsheet of scores for
+              every student.
+            </p>
+            <button type="button" className="btn-lg" onClick={() => router.push('/marking/new')}>
+              Create your first marking job
+            </button>
+          </div>
         </div>
       ) : (
-        exams.map((exam) => {
-          const c = counts[exam.id] || { students: 0, papers: 0, toReview: 0 };
-          return (
-            <div
-              key={exam.id}
-              className="assignment-row"
-              onClick={() => router.push(`/marking/${exam.id}`)}
-            >
-              <div className="assignment-icon">📝</div>
-              <div style={{ flex: 1 }}>
-                <p className="assignment-row-title">
-                  {exam.title}
-                  <span className="tag">{TYPE_LABEL[exam.paper_type] || 'Exam'}</span>
-                </p>
-                <p className="assignment-row-meta">
-                  {[exam.subject, exam.class_label].filter(Boolean).join(' · ') || 'No subject set'} · {exam.total_marks}{' '}
-                  marks · {c.papers} of {c.students} papers uploaded
-                </p>
-              </div>
-              {c.toReview > 0 && <span className="badge badge-flagged">{c.toReview} to review</span>}
-            </div>
-          );
-        })
+        <div className="rows">
+          {exams.map((exam) => {
+            const c = counts[exam.id] || { students: 0, papers: 0, toReview: 0, approved: 0 };
+            const pct = c.students > 0 ? Math.round((c.approved / c.students) * 100) : 0;
+            return (
+              <Link key={exam.id} href={`/marking/${exam.id}`} className="row row-link">
+                <span className="assignment-icon">
+                  <Icon name="pen" size={18} />
+                </span>
+                <div className="row-main">
+                  <p className="row-title">{exam.title}</p>
+                  <div className="meta">
+                    {exam.subject && <span>{exam.subject}</span>}
+                    {exam.class_label && <span>{exam.class_label}</span>}
+                    <span>{TYPE_LABEL[exam.paper_type] || 'Exam'}</span>
+                    <span className="num">{exam.total_marks} marks</span>
+                  </div>
+                  <div className="progress" style={{ marginTop: 10, maxWidth: 360 }} aria-hidden="true">
+                    <span style={{ width: `${pct}%` }} />
+                  </div>
+                  <p className="row-meta num" style={{ marginTop: 4 }}>
+                    {c.approved} of {c.students} approved
+                    {c.papers < c.students ? `, ${c.students - c.papers} still to upload` : ''}
+                  </p>
+                </div>
+                <div className="row-actions">
+                  {c.toReview > 0 && <span className="chip chip-red">{c.toReview} to review</span>}
+                  <Icon name="chevronRight" size={20} />
+                </div>
+              </Link>
+            );
+          })}
+        </div>
       )}
     </div>
   );
