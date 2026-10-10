@@ -176,32 +176,6 @@ export default function InboxPage() {
 
   return (
     <div className="layout-shell">
-      <aside className="sidebar">
-        <div className="sidebar-logo">
-          <div className="appbar-logo">G</div>
-          <span>GradeFlow</span>
-        </div>
-        <nav className="sidebar-nav">
-          <button type="button" className="sidebar-link" onClick={() => router.push('/dashboard')}>
-            <span className="sidebar-link-left">📊 Dashboard</span>
-          </button>
-          <button type="button" className="sidebar-link" onClick={() => router.push('/dashboard')}>
-            <span className="sidebar-link-left">📚 Classes</span>
-          </button>
-          <button type="button" className="sidebar-link active">
-            <span className="sidebar-link-left">📥 Inbox</span>
-            {pending.length > 0 && <span className="sidebar-badge">{pending.length}</span>}
-          </button>
-        </nav>
-        <div className="sidebar-footer">
-          <div className="avatar-chip">{profile?.name?.[0]?.toUpperCase() || '?'}</div>
-          <div className="sidebar-footer-info">
-            <p className="sidebar-footer-name">{profile?.name}</p>
-            <p className="sidebar-footer-role">Teacher</p>
-          </div>
-        </div>
-      </aside>
-
       <div className="main-content">
         <p className="breadcrumb" style={{ textTransform: 'uppercase', fontWeight: 600, fontSize: 11, letterSpacing: 0.5 }}>
           Teacher review queue
