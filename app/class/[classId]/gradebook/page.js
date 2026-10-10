@@ -117,24 +117,6 @@ export default function GradebookPage() {
 
   return (
     <div className="layout-shell">
-      <aside className="sidebar">
-        <div className="sidebar-logo">
-          <div className="appbar-logo">G</div>
-          <span>GradeFlow</span>
-        </div>
-        <nav className="sidebar-nav">
-          <button type="button" className="sidebar-link" onClick={() => router.push('/dashboard')}>
-            <span className="sidebar-link-left">📊 Dashboard</span>
-          </button>
-          <button type="button" className="sidebar-link active" onClick={() => router.push(`/class/${classId}`)}>
-            <span className="sidebar-link-left">📚 Classes</span>
-          </button>
-          <button type="button" className="sidebar-link" onClick={() => router.push('/inbox')}>
-            <span className="sidebar-link-left">📥 Inbox</span>
-          </button>
-        </nav>
-      </aside>
-
       <div className="main-content" style={{ maxWidth: 'none' }}>
         <p className="breadcrumb">
           <a onClick={() => router.push('/dashboard')}>Classes</a> ›{' '}
