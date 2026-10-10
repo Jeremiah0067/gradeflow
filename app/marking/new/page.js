@@ -6,9 +6,10 @@ import Link from 'next/link';
 import { supabase } from '../../../lib/supabaseClient';
 import { parseCsv, guessRosterColumns } from '../../../lib/csv';
 import QuestionsEditor from '../../../components/marking/QuestionsEditor';
+import { Dropzone, FileList as FileListView } from '../../../components/ui/FilePicker';
+import { Icon } from '../../../components/icons';
 import { blankQuestion, validateQuestions, totalMarks, questionToColumns } from '../../../lib/questionForm';
 
-const smallBtn = { width: 'auto', margin: 0, padding: '6px 14px', fontSize: 13 };
 
 export default function NewMarkingJobPage() {
   const router = useRouter();
@@ -76,8 +77,8 @@ export default function NewMarkingJobPage() {
     return { students, skipped };
   }, [csvRows, regCol, nameCol]);
 
-  async function handleCsvFile(e) {
-    const file = e.target.files?.[0];
+  async function handleCsvFile(files) {
+    const file = files?.[0];
     setError('');
     if (!file) return;
 
@@ -175,32 +176,36 @@ export default function NewMarkingJobPage() {
   const headers = csvRows[0] || [];
 
   return (
-    <div className="page-wide" style={{ maxWidth: 820 }}>
+    <div className="page-narrow">
       <div className="breadcrumb">
-        <Link href="/dashboard">Dashboard</Link> / <Link href="/marking">Marking</Link> / New
+        <Link href="/marking">Marking</Link> / New marking job
       </div>
-      <h1>New marking job</h1>
-      <p className="subtitle">Set up the questions and the students. In the next step you will photograph the papers.</p>
+      <div className="page-head">
+        <div>
+          <h1>New marking job</h1>
+          <p className="subtitle">Set up the questions and the students. Next, you will photograph the scripts.</p>
+        </div>
+      </div>
 
       <form onSubmit={handleSave}>
         <div className="surface">
-          <p className="section-heading">1. Details</p>
+          <h2>Details</h2>
 
-          <label>Title</label>
-          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Biomechanics mid-semester test" />
+          <label htmlFor="job-title">Title</label>
+          <input id="job-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Biomechanics mid-semester test" />
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+          <div className="form-grid-3">
             <div>
-              <label>Subject</label>
-              <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Optional" />
+              <label htmlFor="job-subject">Subject</label>
+              <input id="job-subject" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Optional" />
             </div>
             <div>
-              <label>Class / level</label>
-              <input value={classLabel} onChange={(e) => setClassLabel(e.target.value)} placeholder="Optional" />
+              <label htmlFor="job-class">Class or level</label>
+              <input id="job-class" value={classLabel} onChange={(e) => setClassLabel(e.target.value)} placeholder="Optional" />
             </div>
             <div>
-              <label>Type</label>
-              <select value={paperType} onChange={(e) => setPaperType(e.target.value)}>
+              <label htmlFor="job-type">Type</label>
+              <select id="job-type" value={paperType} onChange={(e) => setPaperType(e.target.value)}>
                 <option value="test">Test</option>
                 <option value="assignment">Assignment</option>
                 <option value="exam">Exam</option>
@@ -208,8 +213,11 @@ export default function NewMarkingJobPage() {
             </div>
           </div>
 
-          <label>Extra marking instructions (optional)</label>
+          <label htmlFor="job-extra">
+            Extra marking instructions <span className="hint" style={{ display: 'inline' }}>(optional)</span>
+          </label>
           <textarea
+            id="job-extra"
             rows={3}
             value={extraInstructions}
             onChange={(e) => setExtraInstructions(e.target.value)}
@@ -227,63 +235,66 @@ export default function NewMarkingJobPage() {
         />
 
         <div className="surface">
-          <p className="section-heading">3. Students who wrote this paper</p>
-          <p className="subtitle" style={{ marginBottom: 8 }}>
-            Upload a CSV with a header row. It needs one column for the reg number and one for the full name.
+          <h2>Students who wrote this paper</h2>
+          <p className="section-note">
+            Upload a spreadsheet saved as CSV, with a header row. It needs one column for the reg number and one for the full name.
           </p>
 
-          <input type="file" accept=".csv,text/csv" onChange={handleCsvFile} />
+          <Dropzone
+            title={csvFileName ? 'Choose a different CSV' : 'Choose the student list (CSV)'}
+            hint="From Excel or Google Sheets: File, Download, CSV"
+            accept=".csv,text/csv"
+            multiple={false}
+            icon="file"
+            onFiles={handleCsvFile}
+          />
+          {csvFileName && (
+            <FileListView files={[{ name: csvFileName, size: 0 }]} onRemove={() => { setCsvRows([]); setCsvFileName(''); setRegCol(-1); setNameCol(-1); }} />
+          )}
 
           {csvRows.length > 0 && (
             <>
-              <p className="assignment-row-meta" style={{ marginTop: 10 }}>
-                {csvFileName}: {csvRows.length - 1} rows found
-              </p>
+              <p className="section-note num" style={{ marginTop: 'var(--s-3)' }}>{csvRows.length - 1} rows found. Check the two columns below.</p>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div className="form-grid-2">
                 <div>
-                  <label>Reg number column</label>
-                  <select value={regCol} onChange={(e) => setRegCol(Number(e.target.value))}>
+                  <label htmlFor="col-reg" style={{ marginTop: 0 }}>Reg number column</label>
+                  <select id="col-reg" value={regCol} onChange={(e) => setRegCol(Number(e.target.value))}>
                     <option value={-1}>Choose a column...</option>
                     {headers.map((h, i) => (
-                      <option key={i} value={i}>
-                        {h || `Column ${i + 1}`}
-                      </option>
+                      <option key={i} value={i}>{h || `Column ${i + 1}`}</option>
                     ))}
                   </select>
                 </div>
                 <div>
-                  <label>Student name column</label>
-                  <select value={nameCol} onChange={(e) => setNameCol(Number(e.target.value))}>
+                  <label htmlFor="col-name" style={{ marginTop: 0 }}>Student name column</label>
+                  <select id="col-name" value={nameCol} onChange={(e) => setNameCol(Number(e.target.value))}>
                     <option value={-1}>Choose a column...</option>
                     {headers.map((h, i) => (
-                      <option key={i} value={i}>
-                        {h || `Column ${i + 1}`}
-                      </option>
+                      <option key={i} value={i}>{h || `Column ${i + 1}`}</option>
                     ))}
                   </select>
                 </div>
               </div>
 
               {roster.students.length > 0 && (
-                <div style={{ marginTop: 14 }}>
-                  <p className="assignment-row-meta">
-                    <strong>{roster.students.length}</strong> students ready
-                    {roster.skipped > 0 && ` · ${roster.skipped} rows skipped (blank or duplicate reg number)`}
+                <div style={{ marginTop: 'var(--s-4)' }}>
+                  <p className="alert alert-ok" role="status" style={{ marginBottom: 'var(--s-3)' }}>
+                    <span>
+                      <strong className="num">{roster.students.length}</strong> students ready
+                      {roster.skipped > 0 && `. ${roster.skipped} rows were skipped because they were blank or repeated a reg number.`}
+                    </span>
                   </p>
-                  <div style={{ border: '1px solid var(--gf-border)', borderRadius: 8, marginTop: 8 }}>
-                    {roster.students.slice(0, 5).map((s) => (
-                      <div
-                        key={s.reg_no}
-                        style={{ display: 'flex', gap: 16, padding: '8px 12px', fontSize: 13, borderBottom: '1px solid var(--gf-border)' }}
-                      >
-                        <span style={{ width: 150, color: 'var(--gf-text-secondary)' }}>{s.reg_no}</span>
-                        <span>{s.full_name}</span>
+                  <div className="rows">
+                    {roster.students.slice(0, 5).map((st) => (
+                      <div key={st.reg_no} className="row" style={{ padding: 'var(--s-2) var(--s-4)' }}>
+                        <span className="num" style={{ width: 150, color: 'var(--ink-2)' }}>{st.reg_no}</span>
+                        <span>{st.full_name}</span>
                       </div>
                     ))}
                     {roster.students.length > 5 && (
-                      <div style={{ padding: '8px 12px', fontSize: 13, color: 'var(--gf-text-secondary)' }}>
-                        ...and {roster.students.length - 5} more
+                      <div className="row" style={{ padding: 'var(--s-2) var(--s-4)', color: 'var(--ink-2)' }}>
+                        and {roster.students.length - 5} more
                       </div>
                     )}
                   </div>
@@ -293,14 +304,14 @@ export default function NewMarkingJobPage() {
           )}
         </div>
 
-        {error && <p className="error-text">{error}</p>}
+        {error && <p className="alert alert-error" role="alert">{error}</p>}
 
-        <div style={{ display: 'flex', gap: 12 }}>
-          <button type="button" className="btn-secondary" style={{ width: 'auto' }} onClick={() => router.push('/marking')}>
-            Cancel
-          </button>
-          <button type="submit" style={{ width: 'auto' }} disabled={saving}>
+        <div style={{ display: 'flex', gap: 'var(--s-3)', flexWrap: 'wrap' }}>
+          <button type="submit" className="btn-lg" style={{ marginTop: 0 }} disabled={saving}>
             {saving ? 'Saving...' : 'Create marking job'}
+          </button>
+          <button type="button" className="btn-secondary btn-lg" onClick={() => router.push('/marking')}>
+            Cancel
           </button>
         </div>
       </form>
