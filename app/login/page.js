@@ -43,6 +43,10 @@ export default function LoginPage() {
 
   return (
     <div className="page">
+      <div className="auth-brand">
+        <span className="brand-mark">G</span>
+        GradeFlow
+      </div>
       <h1>Log in</h1>
       <p className="subtitle">Welcome back to GradeFlow.</p>
 
