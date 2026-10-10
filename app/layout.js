@@ -1,4 +1,3 @@
-import '@fontsource-variable/atkinson-hyperlegible-next';
 import '../styles/globals.css';
 import AppShell from '../components/AppShell';
 
