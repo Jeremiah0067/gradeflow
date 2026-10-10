@@ -67,6 +67,10 @@ export default function SignupPage() {
 
   return (
     <div className="page">
+      <div className="auth-brand">
+        <span className="brand-mark">G</span>
+        GradeFlow
+      </div>
       <h1>Create your account</h1>
       <p className="subtitle">Sign up as a teacher or a student.</p>
 
