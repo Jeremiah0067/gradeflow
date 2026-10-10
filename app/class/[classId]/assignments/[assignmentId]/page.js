@@ -438,33 +438,6 @@ export default function AssignmentPage() {
 
   return (
     <div className="layout-shell">
-      <aside className="sidebar">
-        <div className="sidebar-logo">
-          <div className="appbar-logo">G</div>
-          <span>GradeFlow</span>
-        </div>
-        <nav className="sidebar-nav">
-          <button type="button" className="sidebar-link" onClick={() => router.push('/dashboard')}>
-            <span className="sidebar-link-left">📊 Dashboard</span>
-          </button>
-          <button type="button" className="sidebar-link active" onClick={() => router.push(`/class/${classId}`)}>
-            <span className="sidebar-link-left">📚 Classes</span>
-          </button>
-          {isTeacher && (
-            <button type="button" className="sidebar-link" onClick={() => router.push('/inbox')}>
-              <span className="sidebar-link-left">📥 Inbox</span>
-            </button>
-          )}
-        </nav>
-        <div className="sidebar-footer">
-          <div className="avatar-chip">{profile?.name?.[0]?.toUpperCase() || '?'}</div>
-          <div className="sidebar-footer-info">
-            <p className="sidebar-footer-name">{profile?.name}</p>
-            <p className="sidebar-footer-role">{isTeacher ? 'Teacher' : 'Student'}</p>
-          </div>
-        </div>
-      </aside>
-
       <div className="main-content">
         <p className="breadcrumb">
           <a onClick={() => router.push('/dashboard')}>Classes</a> ›{' '}
