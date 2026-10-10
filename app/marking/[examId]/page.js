@@ -7,23 +7,26 @@ import { supabase } from '../../../lib/supabaseClient';
 import { compressImage } from '../../../lib/imageCompress';
 import { estimateBatch, formatUsd } from '../../../lib/estimateCost';
 import { GRADING_MODES } from '../../../lib/gradingModels';
+import { computeProgress, isGradable } from '../../../lib/jobProgress';
+import { Icon } from '../../../components/icons';
+import { Rail, NextAction } from '../../../components/marking/JobRail';
+import { PhotoButtons } from '../../../components/ui/FilePicker';
 
 const BUCKET = 'exam-papers';
 const MAX_PAGES_PER_SCRIPT = 20;
 const GRADING_CONCURRENCY = 3; // how many scripts are graded at the same time
-const MAX_ATTEMPTS = 3; // keep in step with lib/gradeExamPaper.js
-const STALE_GRADING_MS = 10 * 60 * 1000;
-const smallBtn = { width: 'auto', margin: 0, padding: '6px 14px', fontSize: 13 };
 
-const STATUS_LABEL = {
-  uploaded: 'Uploaded',
-  queued: 'Queued',
-  grading: 'Grading',
-  needs_review: 'Graded, needs your review',
-  approved: 'Approved',
-  flagged: 'Graded, check carefully',
-  failed: 'Failed',
+const STATUS_CHIP = {
+  uploaded: { label: 'Waiting', cls: '' },
+  queued: { label: 'Queued', cls: 'chip-blue' },
+  grading: { label: 'Grading', cls: 'chip-blue chip-dot chip-live' },
+  needs_review: { label: 'Ready to review', cls: 'chip-blue' },
+  flagged: { label: 'Check carefully', cls: 'chip-amber' },
+  approved: { label: 'Approved', cls: 'chip-green' },
+  failed: { label: 'Failed', cls: 'chip-red' },
 };
+
+const MODE_SHORT = { standard: 'Standard', smart: 'Smart saver', economy: 'Economy' };
 
 let draftCounter = 0;
 function newDraft() {
@@ -67,16 +70,6 @@ async function fetchAllUsage(examId) {
   return all;
 }
 
-// Scripts that can be sent to the AI now
-function isGradable(paper) {
-  if (['uploaded', 'queued'].includes(paper.status)) return true;
-  if (paper.status === 'failed') return (paper.grading_attempts || 0) < MAX_ATTEMPTS;
-  if (paper.status === 'grading' && paper.grading_started_at) {
-    return Date.now() - new Date(paper.grading_started_at).getTime() > STALE_GRADING_MS;
-  }
-  return false;
-}
-
 async function callGradeApi(paperId, force = false) {
   const { data: sessionData } = await supabase.auth.getSession();
   const token = sessionData?.session?.access_token;
@@ -114,6 +107,7 @@ export default function ExamWorkspacePage() {
   const [usage, setUsage] = useState({ calls: 0, cost: 0 });
   const [measuredOut, setMeasuredOut] = useState({}); // average AI output per script, by model, from real calls
   const [budgetInput, setBudgetInput] = useState('');
+  const [showAdd, setShowAdd] = useState(false);
   const cancelRef = useRef(false);
   const gradingRef = useRef(null);
 
@@ -596,162 +590,324 @@ export default function ExamWorkspacePage() {
   }
 
   const draftsWithPages = drafts.filter((d) => d.pages.length > 0).length;
-  const gradableCount = papers.filter(isGradable).length;
-  const gradedCount = papers.filter((p) => ['needs_review', 'flagged', 'approved'].includes(p.status)).length;
-  const approvedCount = papers.filter((p) => p.status === 'approved').length;
-  const visibleStudents = showMissingOnly ? students.filter((s) => !studentIdsWithScript.has(s.id)) : students;
+  const missingStudents = students.filter((st) => !studentIdsWithScript.has(st.id));
+  const addOpen = showAdd || papers.length === 0;
+  const progress = computeProgress({ questionCount: questions.length, rosterCount: students.length, papers });
+  const next = progress.next;
+  const gradableScripts = papers.filter((p) => isGradable(p));
+  const nextEstimate = next.kind === 'grade' ? estimateFor(gradableScripts) : null;
+  const nextHint = nextEstimate?.known ? `${next.hint} Estimated cost about ${formatUsd(nextEstimate.expected)}.` : next.hint;
+  const activeMode = exam.grading_mode || 'standard';
+  const limit = exam.budget_usd === null || exam.budget_usd === undefined ? null : Number(exam.budget_usd);
+  const settingsSummary = `${MODE_SHORT[activeMode]}, ${formatUsd(usage.cost)} spent${limit !== null ? ` of ${formatUsd(limit)}` : ''}`;
+
+  const railLinks = {
+    questions: `/marking/${examId}/edit`,
+    scripts: '#scripts',
+    grading: '#scripts',
+    review: `/marking/${examId}/review`,
+    export: `/marking/${examId}/review?export=1`,
+  };
+
+  function openAddPanel() {
+    setShowAdd(true);
+    setTimeout(() => document.getElementById('add-scripts')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+  }
 
   return (
-    <div className="page-wide" style={{ maxWidth: 980 }}>
+    <div className="page-wide">
       <div className="breadcrumb">
-        <Link href="/dashboard">Dashboard</Link> / <Link href="/marking">Marking</Link> / {exam.title}
+        <Link href="/marking">Marking</Link> / {exam.title}
       </div>
 
-      <div className="main-header" style={{ marginBottom: 16 }}>
+      <div className="page-head">
         <div>
           <h1>{exam.title}</h1>
-          <p className="subtitle" style={{ marginBottom: 0 }}>
-            {[exam.subject, exam.class_label].filter(Boolean).join(' · ') || 'Marking job'} · {questions.length} question
-            {questions.length === 1 ? '' : 's'} · {exam.total_marks} marks
-          </p>
+          <div className="meta">
+            {exam.subject && <span>{exam.subject}</span>}
+            {exam.class_label && <span>{exam.class_label}</span>}
+            <span className="num">{questions.length} {questions.length === 1 ? 'question' : 'questions'}</span>
+            <span className="num">{exam.total_marks} marks</span>
+          </div>
         </div>
-        {grading ? (
-          <button
-            type="button"
-            className="btn-secondary"
-            style={{ width: 'auto', marginTop: 0 }}
-            onClick={() => {
-              cancelRef.current = true;
-            }}
-          >
+        <div className="page-head-actions">
+          <Link href={`/marking/${examId}/edit`} className="btn btn-secondary btn-sm">
+            Edit questions
+          </Link>
+        </div>
+      </div>
+
+      <Rail steps={progress.steps} links={railLinks} />
+
+      {grading ? (
+        <NextAction next={{ title: `Grading ${grading.done} of ${grading.total}`, hint: 'Keep this page open until it finishes. Results appear below as each script is done.' }}>
+          <div style={{ flex: '1 1 260px', minWidth: 220 }}>
+            <div className="progress" role="progressbar" aria-valuemin={0} aria-valuemax={grading.total} aria-valuenow={grading.done}>
+              <span style={{ width: `${Math.round((grading.done / grading.total) * 100)}%` }} />
+            </div>
+            {grading.failed > 0 && <p className="hint" style={{ margin: '6px 0 0 0' }}>{grading.failed} failed so far</p>}
+          </div>
+          <button type="button" className="btn-secondary" onClick={() => { cancelRef.current = true; }}>
             Stop after current scripts
           </button>
-        ) : (
-          <button
-            type="button"
-            style={{ width: 'auto', marginTop: 0 }}
-            disabled={gradableCount === 0 || !!uploading}
-            onClick={handleGradeAll}
-          >
-            {gradableCount === 0
-              ? 'Nothing to grade'
-              : `Grade ${gradableCount} script${gradableCount === 1 ? '' : 's'} with AI`}
-          </button>
+        </NextAction>
+      ) : (
+        <NextAction next={{ ...next, hint: nextHint }}>
+          {next.kind === 'add' && (
+            <button type="button" className="btn-lg" onClick={openAddPanel}>
+              <Icon name="camera" size={20} />
+              Add scripts
+            </button>
+          )}
+          {next.kind === 'grade' && (
+            <button type="button" className="btn-lg" onClick={handleGradeAll} disabled={!!uploading}>
+              Grade {gradableScripts.length} {gradableScripts.length === 1 ? 'script' : 'scripts'}
+            </button>
+          )}
+          {next.kind === 'review' && (
+            <button type="button" className="btn-lg" onClick={() => router.push(`/marking/${examId}/review`)}>
+              Start reviewing
+              <Icon name="chevronRight" size={18} />
+            </button>
+          )}
+          {next.kind === 'export' && (
+            <button type="button" className="btn-lg" onClick={() => router.push(`/marking/${examId}/review?export=1`)}>
+              <Icon name="download" size={18} />
+              Export results
+            </button>
+          )}
+          {next.kind === 'retry' && (
+            <a href="#scripts" className="btn btn-lg">
+              Show failed scripts
+            </a>
+          )}
+        </NextAction>
+      )}
+
+      {error && (
+        <p className="alert alert-error" role="alert" style={{ marginTop: 'var(--s-4)' }}>
+          {error}
+        </p>
+      )}
+      {notice && (
+        <p className="alert alert-ok" role="status" style={{ marginTop: 'var(--s-4)' }}>
+          {notice}
+        </p>
+      )}
+
+      {/* ---------- scripts ---------- */}
+      <section id="scripts" style={{ marginTop: 'var(--s-6)' }}>
+        <div className="section-head">
+          <div>
+            <h2 style={{ margin: 0 }}>Scripts</h2>
+            <p className="section-note num" style={{ margin: 0 }}>
+              {papers.length} of {students.length} students have a script
+            </p>
+          </div>
+          {papers.length > 0 && (
+            <button type="button" className="btn-secondary" onClick={() => (addOpen ? setShowAdd(false) : openAddPanel())}>
+              {addOpen ? 'Close' : <><Icon name="plus" size={18} /> Add scripts</>}
+            </button>
+          )}
+        </div>
+
+        {addOpen && (
+          <div id="add-scripts" className="surface">
+            <h3>Add scripts</h3>
+            <p className="section-note">
+              One card for each student. Photograph every page of that script, in order. On a phone, the camera opens straight away.
+            </p>
+
+            {drafts.map((draft, index) => (
+              <div key={draft.key} className="draft">
+                <div className="draft-head">
+                  <h3 style={{ margin: 0 }}>Script {index + 1}</h3>
+                  {(drafts.length > 1 || draft.pages.length > 0) && (
+                    <button type="button" className="btn-quiet btn-sm" onClick={() => removeDraft(draft.key)}>
+                      Clear
+                    </button>
+                  )}
+                </div>
+
+                {draft.pages.length > 0 && (
+                  <div className="thumbs">
+                    {draft.pages.map((page, i) => (
+                      <div key={page.id} className="thumb">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={page.url} alt={`Page ${i + 1}`} />
+                        <span className="thumb-n">{i + 1}</span>
+                        <button type="button" className="thumb-x" aria-label={`Remove page ${i + 1}`} onClick={() => removePage(draft.key, page.id)}>
+                          &times;
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div style={{ marginTop: draft.pages.length ? 0 : 'var(--s-3)' }}>
+                  <PhotoButtons
+                    addMore={draft.pages.length > 0}
+                    disabled={preparingKey === draft.key || !!uploading}
+                    onFiles={(files) => addFiles(draft.key, files)}
+                  />
+                  {preparingKey === draft.key && <p className="hint" style={{ margin: 'var(--s-2) 0 0 0' }}>Preparing photos...</p>}
+                </div>
+
+                <label htmlFor={`student-${draft.key}`}>
+                  Whose script is this?
+                  <span className="hint">Optional. If you leave it, the AI reads the name on the first page.</span>
+                </label>
+                <select id={`student-${draft.key}`} value={draft.studentId} onChange={(e) => setDraftStudent(draft.key, e.target.value)}>
+                  <option value="">Let the AI read the name</option>
+                  {studentsAvailableForDraft(draft.key).map((st) => (
+                    <option key={st.id} value={st.id}>
+                      {st.full_name} ({st.reg_no})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ))}
+
+            <div style={{ display: 'flex', gap: 'var(--s-3)', alignItems: 'center', flexWrap: 'wrap', marginTop: 'var(--s-4)' }}>
+              <button type="button" disabled={draftsWithPages === 0 || !!uploading || !!preparingKey} onClick={handleUploadAll}>
+                <Icon name="upload" size={18} />
+                {uploading
+                  ? `Uploading ${uploading.done} of ${uploading.total}...`
+                  : `Upload ${draftsWithPages > 0 ? draftsWithPages : ''} ${draftsWithPages === 1 ? 'script' : 'scripts'}`.replace('  ', ' ')}
+              </button>
+              <button type="button" className="btn-secondary" onClick={addDraft} disabled={!!uploading}>
+                <Icon name="plus" size={18} />
+                Another script
+              </button>
+            </div>
+          </div>
         )}
-      </div>
 
-      {grading && (
-        <div className="surface" style={{ marginBottom: 16 }}>
-          <p className="assignment-row-title">
-            Grading {grading.done} of {grading.total}
-            {grading.failed > 0 && ` (${grading.failed} failed)`}
-          </p>
-          <div style={{ height: 8, background: 'var(--gf-border)', borderRadius: 4, overflow: 'hidden', marginTop: 8 }}>
-            <div
-              style={{
-                height: '100%',
-                width: `${Math.round((grading.done / grading.total) * 100)}%`,
-                background: 'var(--gf-blue)',
-                transition: 'width 0.3s',
-              }}
-            />
-          </div>
-          <p className="assignment-row-meta" style={{ marginTop: 8 }}>
-            Keep this page open until it finishes. Results appear below as each script is graded.
-          </p>
-        </div>
-      )}
+        {papers.length > 0 && (
+          <div className="rows">
+            {papers.map((paper) => {
+              const student = paper.student_id ? studentById[paper.student_id] : null;
+              const thumb = thumbs[paper.exam_paper_pages[0]?.storage_path];
+              const chip = STATUS_CHIP[paper.status] || STATUS_CHIP.uploaded;
+              const pageCount = paper.exam_paper_pages.length;
+              const pickable = students.filter((st) => !studentIdsWithScript.has(st.id) || st.id === paper.student_id);
+              const hasScore = paper.ai_total !== null && paper.ai_total !== undefined;
+              return (
+                <div key={paper.id} className="row">
+                  {thumb ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img className="script-thumb" src={thumb} alt="First page of the script" />
+                  ) : (
+                    <span className="assignment-icon">
+                      <Icon name="file" size={18} />
+                    </span>
+                  )}
 
-      {error && <p className="error-text">{error}</p>}
-      {notice && <p style={{ color: 'var(--gf-success-text)', fontSize: 13 }}>{notice}</p>}
+                  <div className="row-main">
+                    <p className="row-title">{student ? student.full_name : 'Not assigned to a student yet'}</p>
+                    <div className="meta">
+                      <span className="num">
+                        {student
+                          ? student.reg_no
+                          : paper.detected_name || paper.detected_reg_no
+                            ? `AI read: ${[paper.detected_name, paper.detected_reg_no].filter(Boolean).join(', ')}`
+                            : 'The AI will read the name'}
+                      </span>
+                      <span className="num">{pageCount} {pageCount === 1 ? 'page' : 'pages'}</span>
+                      {paper.escalated && <span>Re-checked by the stronger model</span>}
+                    </div>
+                    {paper.match_note && !student && <p className="unsure-note">{paper.match_note}</p>}
+                    {paper.page_issues && <p className="unsure-note">Photo problem: {paper.page_issues}</p>}
+                    {paper.status === 'failed' && paper.last_error && (
+                      <p className="unsure-note" style={{ color: 'var(--red-ink)' }}>{paper.last_error}</p>
+                    )}
+                  </div>
 
-      {gradedCount > 0 && (
-        <div className="surface" style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <div className="assignment-icon">✅</div>
-          <div style={{ flex: 1 }}>
-            <p className="assignment-row-title">
-              {gradedCount} script{gradedCount === 1 ? '' : 's'} graded
-            </p>
-            <p className="assignment-row-meta">
-              {gradedCount - approvedCount} waiting for your review · {approvedCount} approved
-            </p>
+                  <div className="row-actions">
+                    <span className={`chip ${chip.cls}`}>
+                      {paper.status === 'approved' && <Icon name="check" size={14} strokeWidth={3} />}
+                      {chip.label}
+                    </span>
+                    {hasScore && (
+                      <span className="num" aria-label={`Score ${paper.final_total ?? paper.ai_total} out of ${exam.total_marks}`}>
+                        <strong>{paper.final_total ?? paper.ai_total}</strong> / {exam.total_marks}
+                      </span>
+                    )}
+                    {!student && (
+                      <select
+                        aria-label="Assign this script to a student"
+                        value=""
+                        onChange={(e) => handleAssign(paper.id, e.target.value)}
+                        style={{ width: 210, minHeight: 36, padding: '4px 34px 4px 10px', fontSize: '0.875rem' }}
+                      >
+                        <option value="">Choose a student...</option>
+                        {pickable.map((st) => (
+                          <option key={st.id} value={st.id}>
+                            {st.full_name} ({st.reg_no})
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    {paper.status === 'failed' && (
+                      <button type="button" className="btn-secondary btn-sm" disabled={!!grading || retryingId === paper.id} onClick={() => handleRetry(paper)}>
+                        {retryingId === paper.id ? 'Retrying...' : 'Retry'}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="btn-quiet btn-sm is-danger"
+                      style={{ color: 'var(--ink-3)' }}
+                      disabled={paper.status === 'grading' || !!grading}
+                      onClick={() => handleDeletePaper(paper)}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
-          <button type="button" style={{ width: 'auto', marginTop: 0 }} onClick={() => router.push(`/marking/${examId}/review`)}>
-            Review results
-          </button>
-        </div>
-      )}
+        )}
 
-      <div className="stats-row">
-        <div className="stat-card">
-          <div className="stat-icon" style={{ background: '#e3edfd' }}>🎓</div>
-          <div>
-            <p className="stat-value">{students.length}</p>
-            <p className="stat-label">Students on roster</p>
-          </div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-icon" style={{ background: '#e6f4ea' }}>📄</div>
-          <div>
-            <p className="stat-value">{papers.length}</p>
-            <p className="stat-label">Scripts uploaded</p>
-          </div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-icon" style={{ background: '#fdf0da' }}>❓</div>
-          <div>
-            <p className="stat-value">{unmatchedCount}</p>
-            <p className="stat-label">Not yet assigned to a student</p>
-          </div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-icon" style={{ background: '#efe7fb' }}>💰</div>
-          <div>
-            <p className="stat-value">${usage.cost.toFixed(4)}</p>
-            <p className="stat-label">AI cost so far ({usage.calls} call{usage.calls === 1 ? '' : 's'}, estimate)</p>
-          </div>
-        </div>
-      </div>
+        {missingStudents.length > 0 && papers.length > 0 && (
+          <details className="disclosure" style={{ marginTop: 'var(--s-4)' }}>
+            <summary>
+              {missingStudents.length} {missingStudents.length === 1 ? 'student has' : 'students have'} no script yet
+            </summary>
+            <ul className="plainlist num">
+              {missingStudents.map((st) => (
+                <li key={st.id}>
+                  <span>{st.full_name}</span>
+                  <span>{st.reg_no}</span>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+      </section>
 
-      <div className="surface">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <p className="section-heading" style={{ margin: 0 }}>Grading settings</p>
-          <button type="button" className="btn-secondary" style={smallBtn} disabled={!!grading} onClick={() => router.push(`/marking/${examId}/edit`)}>
-            Edit questions and marking guide
-          </button>
-        </div>
+      {/* ---------- settings ---------- */}
+      <details className="disclosure surface" style={{ marginTop: 'var(--s-6)' }}>
+        <summary>
+          <span>Grading settings and cost</span>
+          <span className="disclosure-sub num">{settingsSummary}</span>
+        </summary>
 
-        <label style={{ marginTop: 0 }}>Quality and cost</label>
-        <select
-          value={exam.grading_mode || 'standard'}
-          onChange={(e) => handleModeChange(e.target.value)}
-          disabled={!!grading}
-        >
+        <label htmlFor="grading-mode" style={{ marginTop: 'var(--s-4)' }}>Quality and cost</label>
+        <select id="grading-mode" value={activeMode} onChange={(e) => handleModeChange(e.target.value)} disabled={!!grading}>
           {GRADING_MODES.map((m) => (
             <option key={m.id} value={m.id}>
               {m.label}
             </option>
           ))}
         </select>
-        <p className="assignment-row-meta" style={{ margin: '6px 0 0 0' }}>
-          {GRADING_MODES.find((m) => m.id === (exam.grading_mode || 'standard'))?.blurb}
+        <p className="section-note" style={{ margin: '6px 0 0 0' }}>
+          {GRADING_MODES.find((m) => m.id === activeMode)?.blurb}
         </p>
-        {gradableCount > 0 && (() => {
-          const est = estimateFor(papers.filter(isGradable));
-          return est.known ? (
-            <p style={{ fontSize: 13, margin: '10px 0 0 0' }}>
-              Estimated cost to grade the {gradableCount} waiting script{gradableCount === 1 ? '' : 's'}:{' '}
-              <strong>about {formatUsd(est.expected)}</strong>{' '}
-              <span style={{ color: 'var(--gf-text-secondary)' }}>
-                (likely {formatUsd(est.low)} to {formatUsd(est.high)}
-                {est.calibrated ? ', based on your earlier results' : ', a first guess that improves as you grade'})
-              </span>
-            </p>
-          ) : null;
-        })()}
 
-        <label>Spending limit for this job (US dollars, optional)</label>
+        <label htmlFor="budget">Spending limit for this job (US dollars, optional)</label>
         <input
+          id="budget"
           type="number"
           min="0"
           step="0.01"
@@ -759,239 +915,13 @@ export default function ExamWorkspacePage() {
           value={budgetInput}
           onChange={(e) => setBudgetInput(e.target.value)}
           onBlur={handleBudgetSave}
-          style={{ maxWidth: 200 }}
+          style={{ maxWidth: 220 }}
         />
-        <p className="assignment-row-meta" style={{ margin: '6px 0 0 0' }}>
-          Grading stops by itself once the logged cost reaches this amount. Spent so far: {formatUsd(usage.cost)}. These are
-          estimates, so check Google&apos;s billing page for the exact amount.
+        <p className="section-note" style={{ margin: '6px 0 0 0' }}>
+          Grading stops by itself once the logged cost reaches this amount. These are estimates, so check Google&apos;s billing page for the
+          exact amount.
         </p>
-      </div>
-
-      {/* ======== SPLIT POINT: if you paste in two halves, the second half starts here ======== */}
-
-      <div className="surface">
-        <p className="section-heading">Add scripts</p>
-        <p className="subtitle" style={{ marginBottom: 14 }}>
-          One card per student. Add every page of that student&apos;s script, in order. You can choose the student now, or
-          leave it and the AI will read the name on the first page. On a phone, the photo box lets you take a picture
-          or pick from your gallery.
-        </p>
-
-        {drafts.map((draft, index) => (
-          <div
-            key={draft.key}
-            style={{ border: '1px solid var(--gf-border)', borderRadius: 8, padding: 14, marginBottom: 12 }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <p className="assignment-row-title">Script {index + 1}</p>
-              {(drafts.length > 1 || draft.pages.length > 0) && (
-                <button type="button" className="btn-secondary" style={smallBtn} onClick={() => removeDraft(draft.key)}>
-                  Clear
-                </button>
-              )}
-            </div>
-
-            {draft.pages.length > 0 && (
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '12px 0' }}>
-                {draft.pages.map((page, i) => (
-                  <div key={page.id} style={{ position: 'relative' }}>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={page.url}
-                      alt={`Page ${i + 1}`}
-                      style={{ width: 84, height: 112, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--gf-border)' }}
-                    />
-                    <span
-                      style={{
-                        position: 'absolute', left: 4, bottom: 4, background: 'rgba(0,0,0,0.65)', color: 'white',
-                        fontSize: 11, borderRadius: 4, padding: '1px 6px',
-                      }}
-                    >
-                      {i + 1}
-                    </span>
-                    <button
-                      type="button"
-                      aria-label={`Remove page ${i + 1}`}
-                      onClick={() => removePage(draft.key, page.id)}
-                      style={{
-                        position: 'absolute', top: -6, right: -6, width: 22, height: 22, padding: 0, margin: 0,
-                        borderRadius: '50%', background: 'var(--gf-danger)', fontSize: 13, lineHeight: '22px',
-                      }}
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <label>{draft.pages.length === 0 ? 'Add page photos' : 'Add more pages'}</label>
-            <input
-              type="file"
-              accept="image/*"
-              multiple
-              disabled={preparingKey === draft.key || !!uploading}
-              onChange={(e) => {
-                const files = Array.from(e.target.files || []);
-                e.target.value = '';
-                addFiles(draft.key, files);
-              }}
-            />
-            {preparingKey === draft.key && <p className="assignment-row-meta">Preparing photos...</p>}
-
-            <label>Student (optional)</label>
-            <select value={draft.studentId} onChange={(e) => setDraftStudent(draft.key, e.target.value)}>
-              <option value="">Not sure. Let the AI read the name</option>
-              {studentsAvailableForDraft(draft.key).map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.full_name} ({s.reg_no})
-                </option>
-              ))}
-            </select>
-          </div>
-        ))}
-
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button type="button" className="btn-secondary" style={smallBtn} onClick={addDraft} disabled={!!uploading}>
-            + Another script
-          </button>
-          <button
-            type="button"
-            style={{ width: 'auto', margin: 0 }}
-            disabled={draftsWithPages === 0 || !!uploading || !!preparingKey}
-            onClick={handleUploadAll}
-          >
-            {uploading
-              ? `Uploading ${uploading.done} of ${uploading.total}...`
-              : `Upload ${draftsWithPages || ''} script${draftsWithPages === 1 ? '' : 's'}`}
-          </button>
-        </div>
-      </div>
-
-      <div className="surface">
-        <p className="section-heading">Uploaded scripts ({papers.length})</p>
-
-        {papers.length === 0 ? (
-          <p className="subtitle" style={{ marginBottom: 0 }}>Nothing uploaded yet.</p>
-        ) : (
-          papers.map((paper) => {
-            const student = paper.student_id ? studentById[paper.student_id] : null;
-            const thumb = thumbs[paper.exam_paper_pages[0]?.storage_path];
-            const pickable = students.filter((s) => !studentIdsWithScript.has(s.id) || s.id === paper.student_id);
-            return (
-              <div
-                key={paper.id}
-                style={{
-                  display: 'flex', gap: 14, alignItems: 'center', padding: '10px 0',
-                  borderBottom: '1px solid var(--gf-border)', flexWrap: 'wrap',
-                }}
-              >
-                {thumb ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={thumb}
-                    alt="First page"
-                    style={{ width: 54, height: 72, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--gf-border)' }}
-                  />
-                ) : (
-                  <div className="assignment-icon">📄</div>
-                )}
-
-                <div style={{ flex: 1, minWidth: 200 }}>
-                  <p className="assignment-row-title">
-                    {student ? student.full_name : 'Not assigned yet'}
-                    <span className="tag">{STATUS_LABEL[paper.status] || paper.status}</span>
-                  </p>
-                  <p className="assignment-row-meta">
-                    {student
-                      ? student.reg_no
-                      : paper.detected_name || paper.detected_reg_no
-                        ? `AI read: ${[paper.detected_name, paper.detected_reg_no].filter(Boolean).join(' / ')}`
-                        : 'The AI will read the name on the first page'}{' '}
-                    · {paper.exam_paper_pages.length} page{paper.exam_paper_pages.length === 1 ? '' : 's'}
-                    {paper.ai_total !== null && paper.ai_total !== undefined && ` · AI score ${paper.ai_total}/${exam.total_marks}`}
-                    {paper.escalated && ' · re-checked by the stronger model'}
-                  </p>
-                  {paper.match_note && !student && <p className="assignment-row-meta">{paper.match_note}</p>}
-                  {paper.page_issues && <p className="assignment-row-meta">Photo issue: {paper.page_issues}</p>}
-                  {paper.status === 'failed' && paper.last_error && (
-                    <p className="error-text" style={{ margin: '4px 0 0 0' }}>{paper.last_error}</p>
-                  )}
-                </div>
-
-                <select
-                  value={paper.student_id || ''}
-                  onChange={(e) => handleAssign(paper.id, e.target.value)}
-                  style={{ width: 230 }}
-                >
-                  <option value="">Not assigned</option>
-                  {pickable.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.full_name} ({s.reg_no})
-                    </option>
-                  ))}
-                </select>
-
-                {paper.status === 'failed' && (
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    style={smallBtn}
-                    disabled={!!grading || retryingId === paper.id}
-                    onClick={() => handleRetry(paper)}
-                  >
-                    {retryingId === paper.id ? 'Retrying...' : 'Retry'}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="btn-danger"
-                  style={smallBtn}
-                  disabled={paper.status === 'grading' || !!grading}
-                  onClick={() => handleDeletePaper(paper)}
-                >
-                  Delete
-                </button>
-              </div>
-            );
-          })
-        )}
-      </div>
-
-      <div className="surface">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <p className="section-heading" style={{ margin: 0 }}>
-            Roster ({matchedCount} of {students.length} have a script)
-          </p>
-          <button type="button" className="btn-secondary" style={smallBtn} onClick={() => setShowMissingOnly((v) => !v)}>
-            {showMissingOnly ? 'Show everyone' : 'Show missing only'}
-          </button>
-        </div>
-
-        <div style={{ maxHeight: 340, overflowY: 'auto', border: '1px solid var(--gf-border)', borderRadius: 8 }}>
-          {visibleStudents.length === 0 ? (
-            <p style={{ padding: 12, margin: 0, fontSize: 13, color: 'var(--gf-text-secondary)' }}>
-              Every student on the roster has a script.
-            </p>
-          ) : (
-            visibleStudents.map((s) => (
-              <div
-                key={s.id}
-                style={{
-                  display: 'flex', gap: 16, padding: '8px 12px', fontSize: 13,
-                  borderBottom: '1px solid var(--gf-border)', alignItems: 'center',
-                }}
-              >
-                <span style={{ width: 150, color: 'var(--gf-text-secondary)' }}>{s.reg_no}</span>
-                <span style={{ flex: 1 }}>{s.full_name}</span>
-                <span style={{ color: studentIdsWithScript.has(s.id) ? 'var(--gf-success-text)' : 'var(--gf-warning-text)' }}>
-                  {studentIdsWithScript.has(s.id) ? '✓ Script uploaded' : 'No script yet'}
-                </span>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
+      </details>
     </div>
   );
 }
