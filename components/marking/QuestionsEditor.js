@@ -6,10 +6,10 @@ import { compressImage } from '../../lib/imageCompress';
 import { blankQuestion, isBlankQuestion, totalMarks } from '../../lib/questionForm';
 import { fileKind, normalizeExtraction, applyImport, IMPORT_MAX_FILES, IMPORT_MAX_BYTES } from '../../lib/questionImport';
 import { formatUsd } from '../../lib/estimateCost';
+import { Icon } from '../icons';
+import { Dropzone, FileList as FileListView } from '../ui/FilePicker';
 
 const BUCKET = 'exam-papers';
-const smallBtn = { width: 'auto', margin: 0, padding: '6px 14px', fontSize: 13 };
-const warnBorder = { borderColor: 'var(--gf-warning-text)' };
 
 const FLAG_MESSAGE = {
   label: 'This label was renamed because it was repeated. Please check it.',
@@ -23,7 +23,7 @@ const FLAG_MESSAGE = {
 //   questions / setQuestions: the form cards (see lib/questionForm.js)
 //   examId: set when editing an existing job (so the reading cost is recorded against it)
 //   onMeta: called with { title, subject } found in an imported document
-export default function QuestionsEditor({ questions, setQuestions, examId = null, onMeta, heading = '2. Questions and marking scheme' }) {
+export default function QuestionsEditor({ questions, setQuestions, examId = null, onMeta, heading = 'Questions and marking scheme' }) {
   const [paperFiles, setPaperFiles] = useState([]);
   const [schemeFiles, setSchemeFiles] = useState([]);
   const [reading, setReading] = useState(false);
@@ -159,135 +159,107 @@ export default function QuestionsEditor({ questions, setQuestions, examId = null
     setReading(false);
   }
 
-  const fileList = (files, setter) =>
-    files.length > 0 && (
-      <div style={{ margin: '6px 0' }}>
-        {files.map((f, i) => (
-          <div key={`${f.name}-${i}`} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, margin: '3px 0' }}>
-            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
-            <button
-              type="button"
-              className="btn-secondary"
-              style={{ ...smallBtn, padding: '2px 10px' }}
-              disabled={reading}
-              onClick={() => setter(files.filter((_, j) => j !== i))}
-            >
-              Remove
-            </button>
-          </div>
-        ))}
-      </div>
-    );
+  const unsure = (q, field) => (q.uncertain.includes(field) ? 'is-unsure' : undefined);
 
   return (
     <div className="surface">
-      <p className="section-heading">{heading}</p>
+      <h2>{heading}</h2>
+      <p className="section-note">Add each question and what a full-marks answer looks like. Or let the AI read them from your question paper.</p>
 
-      {/* ---------- import panel ---------- */}
-      <div style={{ background: 'var(--gf-bg)', border: '1px dashed var(--gf-border)', borderRadius: 8, padding: 14, marginBottom: 16 }}>
-        <p className="assignment-row-title" style={{ marginBottom: 4 }}>Read the questions from a document</p>
-        <p className="assignment-row-meta" style={{ margin: '0 0 10px 0' }}>
-          Upload the question paper as a PDF or photos, and the AI fills in the questions below. You can also upload the marking
-          scheme (memo) so it fills in the answers. Always check the result before saving.
+      {/* ---------- read from a document ---------- */}
+      <div className="import-box">
+        <h3>Read the questions from a document</h3>
+        <p className="section-note" style={{ marginBottom: 'var(--s-3)' }}>
+          Upload the question paper as a PDF or photos. You can also add the marking scheme (memo) so it fills in the answers. You will
+          check everything before it is saved.
         </p>
 
-        <label style={{ marginTop: 0 }}>Question paper (PDF or photos)</label>
-        <input
-          type="file"
+        <label style={{ marginTop: 0 }}>Question paper</label>
+        <Dropzone
+          title="Choose the question paper"
+          hint="PDF or photos. Word files: save as PDF first."
           accept=".pdf,application/pdf,image/*"
-          multiple
           disabled={reading}
-          onChange={(e) => {
-            const files = Array.from(e.target.files || []);
-            e.target.value = '';
-            addFiles(setPaperFiles, paperFiles, files);
-          }}
+          onFiles={(files) => addFiles(setPaperFiles, paperFiles, files)}
         />
-        {fileList(paperFiles, setPaperFiles)}
+        <FileListView files={paperFiles} disabled={reading} onRemove={(i) => setPaperFiles(paperFiles.filter((_, j) => j !== i))} />
 
-        <label>Marking scheme or memo (optional)</label>
-        <input
-          type="file"
+        <label>
+          Marking scheme or memo <span className="hint" style={{ display: 'inline' }}>(optional)</span>
+        </label>
+        <Dropzone
+          title="Choose the marking scheme"
+          hint="PDF or photos"
           accept=".pdf,application/pdf,image/*"
-          multiple
+          icon="file"
           disabled={reading}
-          onChange={(e) => {
-            const files = Array.from(e.target.files || []);
-            e.target.value = '';
-            addFiles(setSchemeFiles, schemeFiles, files);
-          }}
+          onFiles={(files) => addFiles(setSchemeFiles, schemeFiles, files)}
         />
-        {fileList(schemeFiles, setSchemeFiles)}
+        <FileListView files={schemeFiles} disabled={reading} onRemove={(i) => setSchemeFiles(schemeFiles.filter((_, j) => j !== i))} />
 
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 12, flexWrap: 'wrap' }}>
-          <button type="button" style={{ width: 'auto', margin: 0 }} disabled={reading || paperFiles.length === 0} onClick={handleRead}>
+        <div style={{ marginTop: 'var(--s-4)' }}>
+          <button type="button" disabled={reading || paperFiles.length === 0} onClick={handleRead}>
             {reading ? 'Reading... this can take up to a minute' : 'Read the questions'}
           </button>
-          <span className="assignment-row-meta">Word files: save them as PDF first.</span>
         </div>
 
-        {importError && <p className="error-text" style={{ marginBottom: 0 }}>{importError}</p>}
+        {importError && (
+          <p className="alert alert-error" role="alert" style={{ marginTop: 'var(--s-4)', marginBottom: 0 }}>
+            {importError}
+          </p>
+        )}
 
         {importInfo && (
-          <div style={{ marginTop: 12, fontSize: 13 }}>
-            <p style={{ margin: 0, color: 'var(--gf-success-text)' }}>
-              Found {importInfo.count} question{importInfo.count === 1 ? '' : 's'}. Please check every one below before you save
-              {importInfo.cost ? ` (reading cost about ${formatUsd(importInfo.cost)})` : ''}.
+          <div style={{ marginTop: 'var(--s-4)' }}>
+            <p className="alert alert-ok" role="status">
+              <span>
+                <strong>Found {importInfo.count} {importInfo.count === 1 ? 'question' : 'questions'}.</strong> Please check every one below before
+                you save{importInfo.cost ? ` (reading cost about ${formatUsd(importInfo.cost)})` : ''}.
+              </span>
             </p>
             {importInfo.notes && (
-              <p style={{ margin: '6px 0 0 0', color: 'var(--gf-warning-text)' }}>Note from the AI: {importInfo.notes}</p>
+              <p className="alert alert-warn"><span><strong>Note from the AI.</strong> {importInfo.notes}</span></p>
             )}
             {importInfo.statedTotal !== null && importInfo.statedTotal !== total && (
-              <p style={{ margin: '6px 0 0 0', color: 'var(--gf-warning-text)' }}>
-                The paper says it is out of {importInfo.statedTotal} marks, but these questions add up to {total}. A question may be
-                missing or a mark may be wrong.
+              <p className="alert alert-warn" style={{ marginBottom: 0 }}>
+                <span>
+                  The paper says it is out of {importInfo.statedTotal} marks, but these questions add up to {total}. A question may be
+                  missing or a mark may be wrong.
+                </span>
               </p>
             )}
           </div>
         )}
       </div>
 
-      {/* ---------- the question cards ---------- */}
+      {/* ---------- the questions ---------- */}
       {questions.map((q, i) => (
-        <div key={q.key} style={{ border: '1px solid var(--gf-border)', borderRadius: 8, padding: 14, marginBottom: 12 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '90px 110px 1fr auto', gap: 12, alignItems: 'end' }}>
+        <div key={q.key} className="qcard">
+          <div className="qcard-top">
             <div>
-              <label style={{ marginTop: 0 }}>Label</label>
-              <input
-                value={q.label}
-                style={q.uncertain.includes('label') ? warnBorder : undefined}
-                onChange={(e) => updateQuestion(q.key, 'label', e.target.value)}
-              />
+              <label htmlFor={`label-${q.key}`}>Label</label>
+              <input id={`label-${q.key}`} className={unsure(q, 'label')} value={q.label} onChange={(e) => updateQuestion(q.key, 'label', e.target.value)} />
             </div>
             <div>
-              <label style={{ marginTop: 0 }}>Marks</label>
+              <label htmlFor={`marks-${q.key}`}>Marks</label>
               <input
+                id={`marks-${q.key}`}
+                className={unsure(q, 'max_marks')}
                 type="number"
                 min="0"
                 step="0.5"
                 value={q.max_marks}
-                style={q.uncertain.includes('max_marks') ? warnBorder : undefined}
                 onChange={(e) => updateQuestion(q.key, 'max_marks', e.target.value)}
               />
             </div>
             <div>
-              <label style={{ marginTop: 0 }}>Type</label>
-              <select
-                value={q.question_type}
-                style={q.uncertain.includes('question_type') ? warnBorder : undefined}
-                onChange={(e) => updateQuestion(q.key, 'question_type', e.target.value)}
-              >
-                <option value="written">Written (AI marks it)</option>
-                <option value="objective">Objective (fixed answer)</option>
+              <label htmlFor={`type-${q.key}`}>Type</label>
+              <select id={`type-${q.key}`} className={unsure(q, 'question_type')} value={q.question_type} onChange={(e) => updateQuestion(q.key, 'question_type', e.target.value)}>
+                <option value="written">Written (the AI marks it)</option>
+                <option value="objective">Objective (one fixed answer)</option>
               </select>
             </div>
-            <button
-              type="button"
-              className="btn-danger"
-              style={smallBtn}
-              disabled={questions.length === 1}
-              onClick={() => removeQuestion(q)}
-            >
+            <button type="button" className="btn-quiet btn-sm is-danger" style={{ color: 'var(--ink-3)' }} disabled={questions.length === 1} onClick={() => removeQuestion(q)}>
               Remove
             </button>
           </div>
@@ -295,59 +267,61 @@ export default function QuestionsEditor({ questions, setQuestions, examId = null
           {q.uncertain
             .filter((f) => f !== 'answer_key')
             .map((f) => (
-              <p key={f} style={{ color: 'var(--gf-warning-text)', fontSize: 12, margin: '6px 0 0 0' }}>
-                {FLAG_MESSAGE[f]}
-              </p>
+              <p key={f} className="unsure-note">{FLAG_MESSAGE[f]}</p>
             ))}
 
-          <label>Question {i + 1} text</label>
+          <label htmlFor={`text-${q.key}`}>Question {i + 1}</label>
           <textarea
+            id={`text-${q.key}`}
+            className={unsure(q, 'question_text')}
             rows={2}
             value={q.question_text}
-            style={q.uncertain.includes('question_text') ? warnBorder : undefined}
             onChange={(e) => updateQuestion(q.key, 'question_text', e.target.value)}
             placeholder="Type the question as it appears on the paper"
           />
           {q.mentionsFigure && (
-            <p style={{ color: 'var(--gf-warning-text)', fontSize: 12, margin: '4px 0 0 0' }}>
-              This question refers to a figure, graph or table. The AI cannot see the question paper when it marks, so describe
-              it in the question text.
+            <p className="unsure-note">
+              This question refers to a figure, graph or table. The AI cannot see the question paper when it marks, so describe it in the
+              question text.
             </p>
           )}
 
           {q.question_type === 'objective' ? (
             <>
-              <label>Correct answer</label>
+              <label htmlFor={`key-${q.key}`}>Correct answer</label>
               <input
+                id={`key-${q.key}`}
+                className={unsure(q, 'answer_key')}
                 value={q.answer_key}
-                style={q.uncertain.includes('answer_key') ? warnBorder : undefined}
                 onChange={(e) => updateQuestion(q.key, 'answer_key', e.target.value)}
                 placeholder="e.g. B, or 42. Use | for alternatives, like B|C"
               />
-              {q.uncertain.includes('answer_key') && (
-                <p style={{ color: 'var(--gf-warning-text)', fontSize: 12, margin: '4px 0 0 0' }}>{FLAG_MESSAGE.answer_key}</p>
-              )}
+              {q.uncertain.includes('answer_key') && <p className="unsure-note">{FLAG_MESSAGE.answer_key}</p>}
             </>
           ) : (
             <>
-              <label>What a full-marks answer should contain (optional but recommended)</label>
+              <label htmlFor={`guide-${q.key}`}>
+                What a full-marks answer contains <span className="hint" style={{ display: 'inline' }}>(optional, but it helps the AI mark like you)</span>
+              </label>
               <textarea
+                id={`guide-${q.key}`}
                 rows={2}
                 value={q.marking_guide}
                 onChange={(e) => updateQuestion(q.key, 'marking_guide', e.target.value)}
-                placeholder="Key points, steps, or the expected answer. e.g. 1 mark for the formula, 2 marks for the working, 1 mark for the final answer."
+                placeholder="Key points, steps, or the expected answer. e.g. 1 mark for the formula, 2 for the working, 1 for the final answer."
               />
             </>
           )}
         </div>
       ))}
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <button type="button" className="btn-secondary" style={smallBtn} onClick={addQuestion}>
-          + Add question
+      <div className="total-line">
+        <button type="button" className="btn-secondary" onClick={addQuestion}>
+          <Icon name="plus" size={18} />
+          Add a question
         </button>
-        <p className="assignment-row-meta" style={{ margin: 0 }}>
-          Total: <strong>{total}</strong> marks
+        <p className="section-note num" style={{ margin: 0 }}>
+          Total <strong style={{ color: 'var(--ink)', fontSize: '1.0625rem' }}>{total}</strong> marks
         </p>
       </div>
     </div>
