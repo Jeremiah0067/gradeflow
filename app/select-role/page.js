@@ -67,6 +67,10 @@ export default function SelectRolePage() {
   if (checking) {
     return (
       <div className="page">
+      <div className="auth-brand">
+        <span className="brand-mark">G</span>
+        GradeFlow
+      </div>
         <p className="subtitle">Loading...</p>
       </div>
     );
