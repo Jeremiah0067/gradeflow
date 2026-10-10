@@ -7,6 +7,7 @@
    ========================================================================== */
 
 /* ---------- 1. Tokens ---------- */
+@import url('https://cdn.jsdelivr.net/npm/@fontsource-variable/atkinson-hyperlegible-next/index.css');
 :root {
   /* surfaces */
   --desk: #f3f4f7;
