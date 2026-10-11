@@ -75,6 +75,11 @@ export default function DashboardPage() {
 
     setProfile(profileData);
 
+    if (profileData.role === 'admin') {
+      router.push('/admin');
+      return;
+    }
+
     if (profileData.role === 'teacher') {
       const { data: ownedClasses, error: classErr } = await supabase
         .from('classes')
