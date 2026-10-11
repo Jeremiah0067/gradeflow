@@ -41,6 +41,50 @@ function statusLabel(status) {
   return status;
 }
 
+
+// Read-only grading feedback for students. Shows only what the teacher has
+// approved: criterion name, feedback, and final points. AI confidence, raw AI
+// scores and override inputs are teacher-only and never rendered here.
+function StudentFeedback({ submission, criteria, maxPoints }) {
+  const scores = submission?.rubric_scores || [];
+  const order = (criteria || []).map((c) => c.id);
+  const sorted = [...scores].sort((a, b) => {
+    const ia = order.indexOf(a.criterion_id);
+    const ib = order.indexOf(b.criterion_id);
+    return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+  });
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <div className="ai-summary-banner">
+        <p style={{ margin: 0, fontSize: 12, color: '#5f6368' }}>Your grade</p>
+        <p className="proposed-total">
+          {totalFor(scores)} / {maxPoints}
+        </p>
+      </div>
+
+      {sorted.map((s) => {
+        const criterion = (criteria || []).find((c) => c.id === s.criterion_id);
+        const points = s.teacher_override_points ?? s.ai_awarded_points;
+        return (
+          <div key={s.id} className="criterion-review-row">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>{criterion?.label || 'Feedback'}</span>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>
+                {points}
+                {criterion ? ` / ${criterion.max_points}` : ''} pts
+              </span>
+            </div>
+            {s.ai_reasoning && (
+              <p style={{ margin: 0, fontSize: 13, color: '#5f6368' }}>{s.ai_reasoning}</p>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function AssignmentPage() {
   const router = useRouter();
   const { classId, assignmentId } = useParams();
@@ -49,6 +93,7 @@ export default function AssignmentPage() {
   const [klass, setKlass] = useState(null);
   const [assignment, setAssignment] = useState(null);
   const [mySubmission, setMySubmission] = useState(null);
+  const [studentCriteria, setStudentCriteria] = useState([]);
   const [allSubmissions, setAllSubmissions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -94,7 +139,7 @@ export default function AssignmentPage() {
 
     const { data: assignmentData, error: aErr } = await supabase
       .from('assignments')
-      .select('*, rubric_criteria(*), classes(name)')
+      .select(profileData.role === 'student' ? '*, classes(name)' : '*, rubric_criteria(*), classes(name)')
       .eq('id', assignmentId)
       .single();
 
@@ -128,6 +173,14 @@ export default function AssignmentPage() {
         .eq('student_id', session.user.id)
         .maybeSingle();
       setMySubmission(sub);
+      if (sub && isVisibleToStudent(sub.status) && assignmentData.type !== 'quiz') {
+        const { data: crit } = await supabase
+          .from('rubric_criteria')
+          .select('*')
+          .eq('assignment_id', assignmentId)
+          .order('sort_order', { ascending: true });
+        setStudentCriteria(crit || []);
+      }
       if (sub?.status === 'needs_revision' && sub.raw_content?.text) {
         setRevisionText(sub.raw_content.text);
       }
@@ -479,7 +532,7 @@ export default function AssignmentPage() {
               )}
             </div>
 
-            {assignment?.rubric_criteria?.length > 0 && (
+            {isTeacher && assignment?.rubric_criteria?.length > 0 && (
               <div className="surface">
                 <p className="section-heading">
                   Rubric · {assignment.rubric_criteria.reduce((s, c) => s + c.max_points, 0)} pts
@@ -530,16 +583,11 @@ export default function AssignmentPage() {
                       {statusLabel(mySubmission.status)}
                     </span>
                     {isVisibleToStudent(mySubmission.status) && mySubmission.rubric_scores?.length > 0 && (
-                      <div style={{ marginTop: 16 }}>
-                        {mySubmission.rubric_scores.map((s) => (
-                          <p key={s.id} style={{ margin: '4px 0', fontSize: 14 }}>
-                            {s.ai_reasoning} — {s.teacher_override_points ?? s.ai_awarded_points} pts
-                          </p>
-                        ))}
-                        <p style={{ fontWeight: 600, marginTop: 12 }}>
-                          Total: {totalFor(mySubmission.rubric_scores)} / {assignment.max_points}
-                        </p>
-                      </div>
+                      <StudentFeedback
+                        submission={mySubmission}
+                        criteria={studentCriteria}
+                        maxPoints={assignment.max_points}
+                      />
                     )}
                     {!isVisibleToStudent(mySubmission.status) && (
                       <p className="subtitle" style={{ marginTop: 12 }}>
@@ -597,16 +645,11 @@ export default function AssignmentPage() {
                       {statusLabel(mySubmission.status)}
                     </span>
                     {isVisibleToStudent(mySubmission.status) && mySubmission.rubric_scores?.length > 0 && (
-                      <div style={{ marginTop: 16 }}>
-                        {mySubmission.rubric_scores.map((s) => (
-                          <p key={s.id} style={{ margin: '4px 0', fontSize: 14 }}>
-                            {s.ai_reasoning} — {s.teacher_override_points ?? s.ai_awarded_points} pts
-                          </p>
-                        ))}
-                        <p style={{ fontWeight: 600, marginTop: 12 }}>
-                          Total: {totalFor(mySubmission.rubric_scores)} / {assignment.max_points}
-                        </p>
-                      </div>
+                      <StudentFeedback
+                        submission={mySubmission}
+                        criteria={studentCriteria}
+                        maxPoints={assignment.max_points}
+                      />
                     )}
                   </>
                 ) : (
