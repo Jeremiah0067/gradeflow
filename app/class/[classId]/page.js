@@ -324,6 +324,14 @@ export default function ClassPage() {
               type="button"
               className="btn-secondary"
               style={{ width: 'auto', margin: 0, padding: '8px 14px' }}
+              onClick={() => router.push(`/class/${classId}/reports`)}
+            >
+              Reports
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              style={{ width: 'auto', margin: 0, padding: '8px 14px' }}
               onClick={() => router.push(`/class/${classId}/people`)}
             >
               People
