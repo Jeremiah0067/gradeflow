@@ -190,37 +190,40 @@ export default function EditMarkingJobPage() {
   }
 
   return (
-    <div className="page-wide" style={{ maxWidth: 820 }}>
+    <div className="page-narrow">
       <div className="breadcrumb">
-        <Link href="/dashboard">Dashboard</Link> / <Link href="/marking">Marking</Link> /{' '}
-        <Link href={`/marking/${examId}`}>{title || 'Marking job'}</Link> / Edit
+        <Link href="/marking">Marking</Link> / <Link href={`/marking/${examId}`}>{title || 'Marking job'}</Link> / Edit
       </div>
-      <h1>Edit questions and marking guide</h1>
-      <p className="subtitle">
-        {gradedCount > 0
-          ? `${gradedCount} script${gradedCount === 1 ? ' is' : 's are'} already graded. Changes do not alter them by themselves. Use "Grade again with AI" on a script after you save.`
-          : 'Nothing has been graded yet, so you can change anything safely.'}
-      </p>
+      <div className="page-head">
+        <div>
+          <h1>Edit questions and marking guide</h1>
+          <p className="subtitle">
+            {gradedCount > 0
+              ? `${gradedCount} ${gradedCount === 1 ? 'script is' : 'scripts are'} already graded. Changes do not alter them by themselves. After you save, use "Grade again with AI" on a script.`
+              : 'Nothing has been graded yet, so you can change anything safely.'}
+          </p>
+        </div>
+      </div>
 
       <form onSubmit={handleSave}>
         <div className="surface">
-          <p className="section-heading">1. Details</p>
+          <h2>Details</h2>
 
-          <label>Title</label>
-          <input value={title} onChange={(e) => setTitle(e.target.value)} />
+          <label htmlFor="e-title">Title</label>
+          <input id="e-title" value={title} onChange={(e) => setTitle(e.target.value)} />
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+          <div className="form-grid-3">
             <div>
-              <label>Subject</label>
-              <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Optional" />
+              <label htmlFor="e-subject">Subject</label>
+              <input id="e-subject" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Optional" />
             </div>
             <div>
-              <label>Class / level</label>
-              <input value={classLabel} onChange={(e) => setClassLabel(e.target.value)} placeholder="Optional" />
+              <label htmlFor="e-class">Class or level</label>
+              <input id="e-class" value={classLabel} onChange={(e) => setClassLabel(e.target.value)} placeholder="Optional" />
             </div>
             <div>
-              <label>Type</label>
-              <select value={paperType} onChange={(e) => setPaperType(e.target.value)}>
+              <label htmlFor="e-type">Type</label>
+              <select id="e-type" value={paperType} onChange={(e) => setPaperType(e.target.value)}>
                 <option value="test">Test</option>
                 <option value="assignment">Assignment</option>
                 <option value="exam">Exam</option>
@@ -228,8 +231,11 @@ export default function EditMarkingJobPage() {
             </div>
           </div>
 
-          <label>Extra marking instructions (optional)</label>
+          <label htmlFor="e-extra">
+            Extra marking instructions <span className="hint" style={{ display: 'inline' }}>(optional)</span>
+          </label>
           <textarea
+            id="e-extra"
             rows={3}
             value={extraInstructions}
             onChange={(e) => setExtraInstructions(e.target.value)}
@@ -239,20 +245,14 @@ export default function EditMarkingJobPage() {
 
         <QuestionsEditor questions={questions} setQuestions={setQuestions} examId={examId} />
 
-        {error && <p className="error-text">{error}</p>}
+        {error && <p className="alert alert-error" role="alert">{error}</p>}
 
-        <div style={{ display: 'flex', gap: 12 }}>
-          <button
-            type="button"
-            className="btn-secondary"
-            style={{ width: 'auto' }}
-            disabled={saving}
-            onClick={() => router.push(`/marking/${examId}`)}
-          >
-            Cancel
-          </button>
-          <button type="submit" style={{ width: 'auto' }} disabled={saving}>
+        <div style={{ display: 'flex', gap: 'var(--s-3)', flexWrap: 'wrap' }}>
+          <button type="submit" className="btn-lg" style={{ marginTop: 0 }} disabled={saving}>
             {saving ? 'Saving...' : 'Save changes'}
+          </button>
+          <button type="button" className="btn-secondary btn-lg" disabled={saving} onClick={() => router.push(`/marking/${examId}`)}>
+            Cancel
           </button>
         </div>
       </form>
