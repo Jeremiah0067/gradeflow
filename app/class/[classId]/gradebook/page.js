@@ -130,14 +130,24 @@ export default function GradebookPage() {
               {students.length} students · {assignments.length} assignments · {totalPossible} points possible
             </p>
           </div>
-          <button
-            type="button"
-            className="btn-secondary"
-            style={{ width: 'auto', marginTop: 0 }}
-            onClick={() => router.push(`/class/${classId}/people`)}
-          >
-            Manage people
-          </button>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              className="btn-secondary"
+              style={{ width: 'auto', marginTop: 0 }}
+              onClick={() => router.push(`/class/${classId}/insights`)}
+            >
+              Insights
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              style={{ width: 'auto', marginTop: 0 }}
+              onClick={() => router.push(`/class/${classId}/people`)}
+            >
+              Manage people
+            </button>
+          </div>
         </div>
 
         {error && <p className="error-text">{error}</p>}
