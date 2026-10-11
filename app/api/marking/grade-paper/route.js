@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { gradeExamPaper } from '../../../../lib/gradeExamPaper';
+import { isAdminUser, BUDGET_TEACHER_MESSAGE } from '../../../../lib/adminAuth';
 
 // Grading one script with photos can take a while. Raise this if your Vercel plan allows more.
 export const maxDuration = 60;
@@ -41,6 +42,12 @@ export async function POST(req) {
     // 3. Only now use the powerful service-role client to do the grading.
     const service = createClient(url, serviceKey);
     const result = await gradeExamPaper(service, geminiKey, paperId, { force: !!force });
+
+    // Teachers never receive dollar amounts. Only administrators do.
+    if (!(await isAdminUser(user.id))) {
+      delete result.costUsd;
+      if (result.budgetReached) result.error = BUDGET_TEACHER_MESSAGE;
+    }
     return Response.json(result);
   } catch (err) {
     return Response.json({ ok: false, error: err.message }, { status: 500 });
