@@ -143,6 +143,14 @@ export default function GradebookPage() {
               type="button"
               className="btn-secondary"
               style={{ width: 'auto', marginTop: 0 }}
+              onClick={() => router.push(`/class/${classId}/reports`)}
+            >
+              Report cards
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              style={{ width: 'auto', marginTop: 0 }}
               onClick={() => router.push(`/class/${classId}/people`)}
             >
               Manage people
