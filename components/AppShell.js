@@ -12,6 +12,9 @@ const BARE = ['/', '/login', '/signup', '/select-role'];
 const isBare = (path) => BARE.includes(path) || path.startsWith('/auth');
 
 function itemsFor(role) {
+  if (role === 'admin') {
+    return [{ key: 'admin', label: 'Admin', href: '/admin', icon: 'home' }];
+  }
   if (role === 'student') {
     return [{ key: 'home', label: 'Home', href: '/dashboard', icon: 'home' }];
   }
@@ -24,6 +27,7 @@ function itemsFor(role) {
 }
 
 function activeKey(path) {
+  if (path.startsWith('/admin')) return 'admin';
   if (path.startsWith('/marking')) return 'marking';
   if (path.startsWith('/inbox')) return 'inbox';
   if (path.startsWith('/class')) return 'classes';
@@ -118,7 +122,7 @@ export default function AppShell({ children }) {
           <div className="avatar" aria-hidden="true">{initial}</div>
           <div className="shell-user-info">
             <p className="shell-user-name">{profile?.name || ' '}</p>
-            <p className="shell-user-role">{profile ? (profile.role === 'teacher' ? 'Teacher' : 'Student') : ' '}</p>
+            <p className="shell-user-role">{profile ? (profile.role === 'admin' ? 'Admin' : profile.role === 'teacher' ? 'Teacher' : 'Student') : ' '}</p>
           </div>
           <button type="button" className="btn-quiet btn-sm" onClick={handleLogout} aria-label="Log out" title="Log out" style={{ padding: 0, width: 36, minHeight: 36 }}>
             <Icon name="logout" size={18} />
