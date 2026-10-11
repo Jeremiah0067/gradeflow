@@ -5,7 +5,6 @@ import { supabase } from '../../lib/supabaseClient';
 import { compressImage } from '../../lib/imageCompress';
 import { blankQuestion, isBlankQuestion, totalMarks } from '../../lib/questionForm';
 import { fileKind, normalizeExtraction, applyImport, IMPORT_MAX_FILES, IMPORT_MAX_BYTES } from '../../lib/questionImport';
-import { formatUsd } from '../../lib/estimateCost';
 import { Icon } from '../icons';
 import { Dropzone, FileList as FileListView } from '../ui/FilePicker';
 
@@ -28,7 +27,7 @@ export default function QuestionsEditor({ questions, setQuestions, examId = null
   const [schemeFiles, setSchemeFiles] = useState([]);
   const [reading, setReading] = useState(false);
   const [importError, setImportError] = useState('');
-  const [importInfo, setImportInfo] = useState(null); // { count, notes, statedTotal, cost }
+  const [importInfo, setImportInfo] = useState(null); // { count, notes, statedTotal }
 
   const total = totalMarks(questions);
 
@@ -147,7 +146,6 @@ export default function QuestionsEditor({ questions, setQuestions, examId = null
         count: extraction.questions.length,
         notes: extraction.notes,
         statedTotal: extraction.statedTotal,
-        cost: data.costUsd,
       });
       setPaperFiles([]);
       setSchemeFiles([]);
@@ -214,7 +212,7 @@ export default function QuestionsEditor({ questions, setQuestions, examId = null
             <p className="alert alert-ok" role="status">
               <span>
                 <strong>Found {importInfo.count} {importInfo.count === 1 ? 'question' : 'questions'}.</strong> Please check every one below before
-                you save{importInfo.cost ? ` (reading cost about ${formatUsd(importInfo.cost)})` : ''}.
+                you save.
               </span>
             </p>
             {importInfo.notes && (
