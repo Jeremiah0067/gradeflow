@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { isAdminUser } from '../../../../lib/adminAuth';
 import { extractQuestionsFromFiles } from '../../../../lib/extractQuestions';
 
 export const maxDuration = 60;
@@ -39,6 +40,7 @@ export async function POST(req) {
       paperPaths,
       schemePaths: schemePaths || [],
     });
+    if (!(await isAdminUser(user.id))) delete result.costUsd;
     return Response.json(result);
   } catch (err) {
     return Response.json({ error: err.message || 'Something went wrong while reading the document.' }, { status: 400 });
