@@ -80,6 +80,11 @@ export default function DashboardPage() {
       return;
     }
 
+    if (profileData.role === 'school_admin') {
+      router.push('/school');
+      return;
+    }
+
     if (profileData.role === 'teacher') {
       const { data: ownedClasses, error: classErr } = await supabase
         .from('classes')
