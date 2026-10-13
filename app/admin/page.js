@@ -6,9 +6,9 @@ import { supabase } from '../../lib/supabaseClient';
 import { formatUsd } from '../../lib/estimateCost';
 import { GRADING_MODES } from '../../lib/gradingModels';
 
-async function adminFetch(method, body) {
+async function adminFetch(method, body, path = '/api/admin/jobs') {
   const { data } = await supabase.auth.getSession();
-  const res = await fetch('/api/admin/jobs', {
+  const res = await fetch(path, {
     method,
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${data?.session?.access_token}` },
     body: body ? JSON.stringify(body) : undefined,
@@ -16,6 +16,167 @@ async function adminFetch(method, body) {
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(json.error || `Request failed (${res.status}).`);
   return json;
+}
+
+function SchoolsSection() {
+  const [schools, setSchools] = useState([]);
+  const [name, setName] = useState('');
+  const [forms, setForms] = useState({}); // per school: { credits, note, email }
+  const [price, setPrice] = useState(''); // your price per script, in naira
+  const [rate, setRate] = useState(''); // naira per 1 US dollar
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function load() {
+    try {
+      const { schools: rows } = await adminFetch('GET', undefined, '/api/admin/schools');
+      setSchools(rows);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function act(body, message) {
+    setError('');
+    setNotice('');
+    try {
+      await adminFetch('POST', body, '/api/admin/schools');
+      setNotice(message);
+      await load();
+      return true;
+    } catch (err) {
+      setError(err.message);
+      return false;
+    }
+  }
+
+  const setForm = (id, patch) => setForms((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
+
+  const priceN = Number(price);
+  const rateN = Number(rate);
+  const canMargin = priceN > 0 && rateN > 0;
+
+  return (
+    <div style={{ marginBottom: 'var(--s-6)' }}>
+      <h2 style={{ marginBottom: 4 }}>Schools and credits</h2>
+      <p className="section-note" style={{ marginTop: 0 }}>
+        One credit marks one script. Add credits after a school pays you. Cost figures are estimates from your AI usage log.
+      </p>
+
+      {error && <p className="alert alert-error" role="alert">{error}</p>}
+      {notice && <p className="alert alert-ok" role="status">{notice}</p>}
+
+      <div className="surface" style={{ marginTop: 'var(--s-3)' }}>
+        <p className="section-heading" style={{ marginBottom: 8 }}>Margin calculator</p>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          <div>
+            <label htmlFor="price">Your price per script (naira)</label>
+            <input id="price" type="number" min="0" step="1" value={price} onChange={(e) => setPrice(e.target.value)} style={{ maxWidth: 200 }} />
+          </div>
+          <div>
+            <label htmlFor="rate">Naira per 1 US dollar</label>
+            <input id="rate" type="number" min="0" step="1" value={rate} onChange={(e) => setRate(e.target.value)} style={{ maxWidth: 200 }} />
+          </div>
+        </div>
+        <p className="section-note" style={{ margin: '8px 0 0 0' }}>
+          Type both and each school below shows your margin. Check the exchange rate often, because your AI cost is in dollars.
+        </p>
+      </div>
+
+      <form
+        style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', marginTop: 'var(--s-4)' }}
+        onSubmit={async (e) => {
+          e.preventDefault();
+          if (await act({ action: 'createSchool', name }, `School "${name}" created.`)) setName('');
+        }}
+      >
+        <div style={{ flex: '1 1 240px' }}>
+          <label htmlFor="new-school">New school</label>
+          <input id="new-school" value={name} placeholder="School name" onChange={(e) => setName(e.target.value)} />
+        </div>
+        <button type="submit" className="btn-primary" style={{ width: 'auto', marginTop: 0 }} disabled={!name.trim()}>
+          Create school
+        </button>
+      </form>
+
+      {schools.length === 0 && <p className="subtitle">No schools yet.</p>}
+
+      {schools.map((s) => {
+        const f = forms[s.id] || {};
+        const costNaira = s.cost_per_script_usd !== null && rateN > 0 ? s.cost_per_script_usd * rateN : null;
+        const margin = canMargin && costNaira !== null ? ((priceN - costNaira) / priceN) * 100 : null;
+        return (
+          <div key={s.id} className="surface" style={{ marginTop: 'var(--s-4)' }}>
+            <p className="section-heading" style={{ marginBottom: 2 }}>{s.name}</p>
+            <p className="section-note" style={{ margin: '0 0 12px 0' }}>
+              <span className="num">{s.credit_balance}</span> credits left · <span className="num">{s.teachers}</span> teachers ·{' '}
+              <span className="num">{s.scripts}</span> scripts marked
+              {s.admins.length > 0 ? ` · Admin: ${s.admins.join(', ')}` : ' · No school admin yet'}
+            </p>
+            <p className="section-note" style={{ margin: '0 0 12px 0' }}>
+              AI cost <span className="num">{formatUsd(s.cost_usd)}</span>
+              {s.cost_per_script_usd !== null && (
+                <> · <span className="num">{formatUsd(s.cost_per_script_usd)}</span> per script</>
+              )}
+              {margin !== null && (
+                <> · margin <strong className="num">{Math.round(margin)}%</strong></>
+              )}
+            </p>
+
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+              <div>
+                <label htmlFor={`cr-${s.id}`}>Credits (minus to remove)</label>
+                <input id={`cr-${s.id}`} type="number" step="1" value={f.credits || ''} onChange={(e) => setForm(s.id, { credits: e.target.value })} style={{ maxWidth: 160 }} />
+              </div>
+              <div style={{ flex: '1 1 180px' }}>
+                <label htmlFor={`note-${s.id}`}>Note (optional)</label>
+                <input id={`note-${s.id}`} value={f.note || ''} placeholder="e.g. Transfer 14 Oct" onChange={(e) => setForm(s.id, { note: e.target.value })} />
+              </div>
+              <button
+                type="button"
+                className="btn-primary"
+                style={{ width: 'auto', marginTop: 0 }}
+                disabled={!f.credits}
+                onClick={async () => {
+                  if (await act({ action: 'topUp', schoolId: s.id, credits: f.credits, note: f.note }, `Credits updated for ${s.name}.`)) {
+                    setForm(s.id, { credits: '', note: '' });
+                  }
+                }}
+              >
+                Update credits
+              </button>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', marginTop: 12 }}>
+              <div style={{ flex: '1 1 240px' }}>
+                <label htmlFor={`adm-${s.id}`}>Make someone the school admin (by email)</label>
+                <input id={`adm-${s.id}`} type="email" value={f.email || ''} placeholder="They must have signed up as a teacher" onChange={(e) => setForm(s.id, { email: e.target.value })} />
+              </div>
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ width: 'auto', marginTop: 0 }}
+                disabled={!f.email}
+                onClick={async () => {
+                  if (await act({ action: 'assignAdmin', schoolId: s.id, email: f.email }, `School admin set for ${s.name}.`)) {
+                    setForm(s.id, { email: '' });
+                  }
+                }}
+              >
+                Set school admin
+              </button>
+            </div>
+          </div>
+        );
+      })}
+
+      <h2 style={{ margin: 'var(--s-6) 0 4px 0' }}>Marking jobs</h2>
+    </div>
+  );
 }
 
 export default function AdminPage() {
@@ -106,7 +267,7 @@ export default function AdminPage() {
     <div className="page-wide">
       <div className="page-head">
         <div>
-          <h1>Admin: grading cost</h1>
+          <h1>Admin</h1>
           <div className="meta">
             <span className="num">{jobs.length} marking {jobs.length === 1 ? 'job' : 'jobs'}</span>
             <span className="num">{formatUsd(totalSpent)} spent in total</span>
@@ -121,6 +282,8 @@ export default function AdminPage() {
         Teachers do not see any cost, grading mode or spending limit. Set them here. Amounts are estimates, so check
         Google&apos;s billing page for the exact figure.
       </p>
+
+      <SchoolsSection />
 
       {jobs.length === 0 && <p className="subtitle">No marking jobs yet.</p>}
 
