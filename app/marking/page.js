@@ -85,10 +85,15 @@ export default function MarkingHubPage() {
           <p className="subtitle">Photograph handwritten papers, let the AI mark them in one batch, then check and export the scores.</p>
         </div>
         {exams.length > 0 && (
-          <button type="button" onClick={() => router.push('/marking/new')}>
-            <Icon name="plus" size={18} />
-            New marking job
-          </button>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button type="button" className="btn-secondary" onClick={() => router.push('/marking/reports')}>
+              Report cards
+            </button>
+            <button type="button" onClick={() => router.push('/marking/new')}>
+              <Icon name="plus" size={18} />
+              New marking job
+            </button>
+          </div>
         )}
       </div>
 
