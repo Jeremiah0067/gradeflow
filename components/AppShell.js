@@ -9,7 +9,7 @@ import { Icon } from './icons';
 
 // Pages that are shown without the navigation (signing in, choosing a role)
 const BARE = ['/', '/login', '/signup', '/select-role'];
-const isBare = (path) => BARE.includes(path) || path.startsWith('/auth');
+const isBare = (path) => BARE.includes(path) || path.startsWith('/auth') || path.startsWith('/r/');
 
 function itemsFor(role) {
   if (role === 'school_admin') {
