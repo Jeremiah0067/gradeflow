@@ -170,6 +170,8 @@ function Analysis({ s, brand, dateText, onSaveRec }) {
 export default function MarkingReportsPage() {
   const router = useRouter();
   const stopRef = useRef(false);
+  const stopCRef = useRef(false);
+  const commentsRef = useRef({});
 
   const [teacherName, setTeacherName] = useState('');
   const [exams, setExams] = useState([]);
@@ -179,6 +181,8 @@ export default function MarkingReportsPage() {
   const [building, setBuilding] = useState(false);
   const [brand, setBrand] = useState(DEFAULT_BRAND);
   const [comments, setComments] = useState({});
+  const [genC, setGenC] = useState({ running: false, done: 0, total: 0 });
+  const [publishing, setPublishing] = useState(false);
   const [showPosition, setShowPosition] = useState(true);
   const [mode, setMode] = useState('card');
   const [selectedStudent, setSelectedStudent] = useState('all');
@@ -347,6 +351,131 @@ export default function MarkingReportsPage() {
     else setNotice('Recommendations are ready. Please read and edit them before you print.');
   }
 
+  // Comments are saved on this device as you go, so a refresh does not lose them.
+  const commentsKey = raw ? 'gf-comments:' + raw.exams.map((e) => e.id).sort().join(',') : null;
+  commentsRef.current = comments;
+
+  useEffect(() => {
+    if (!commentsKey) return;
+    try {
+      setComments(JSON.parse(localStorage.getItem(commentsKey) || '{}'));
+    } catch {
+      setComments({});
+    }
+  }, [commentsKey]);
+
+  function updateComments(patch) {
+    setComments((prev) => {
+      const next = { ...prev, ...patch };
+      try {
+        if (commentsKey) localStorage.setItem(commentsKey, JSON.stringify(next));
+      } catch {
+        // Storage can be unavailable; the comments still work for this session.
+      }
+      return next;
+    });
+  }
+
+  async function draftComments() {
+    const targets = students.filter((st) => !(commentsRef.current[st.key] || '').trim());
+    if (targets.length === 0) return;
+    if (!confirm(`Draft a comment for ${targets.length} student${targets.length === 1 ? '' : 's'}? Students who already have a comment are skipped. Read and edit every comment before you share it.`)) return;
+
+    stopCRef.current = false;
+    setError('');
+    setNotice('');
+    const groups = [];
+    for (let i = 0; i < targets.length; i += 10) groups.push(targets.slice(i, i + 10));
+    const total = targets.length;
+    let done = 0;
+    let failed = 0;
+    let paused = '';
+    setGenC({ running: true, done: 0, total });
+
+    async function worker() {
+      while (groups.length > 0 && !stopCRef.current) {
+        const group = groups.shift();
+        try {
+          const { data: sessionData } = await supabase.auth.getSession();
+          const res = await fetch('/api/marking/comments', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessionData?.session?.access_token}` },
+            body: JSON.stringify({
+              examId: raw.exams[0].id,
+              students: group.map((st, i) => ({
+                i,
+                overallPct: st.overallPct,
+                positionText: showPosition ? st.positionText : '',
+                subjects: st.rows.map((r) => ({ subject: r.subject, pct: r.pct, classAvgPct: showPosition ? r.classAvgPct : null })),
+              })),
+            }),
+          });
+          const json = await res.json().catch(() => ({}));
+          if (json.budgetReached) {
+            paused = json.error;
+            stopCRef.current = true;
+            return;
+          }
+          if (json.comments) {
+            const patch = {};
+            group.forEach((st, i) => {
+              const text = json.comments[i];
+              if (!text) failed += 1;
+              else if (!(commentsRef.current[st.key] || '').trim()) patch[st.key] = text;
+            });
+            updateComments(patch);
+          } else {
+            failed += group.length;
+          }
+        } catch {
+          failed += group.length;
+        }
+        done += group.length;
+        setGenC({ running: true, done, total });
+      }
+    }
+
+    await Promise.all([worker(), worker()]);
+    setGenC({ running: false, done: 0, total: 0 });
+    if (paused) setError(paused);
+    else if (failed > 0) setNotice(`${failed} could not be written. Run it again to retry them.`);
+    else if (stopCRef.current) setNotice('Stopped. The comments already written are saved.');
+    else setNotice('Comments are ready. Please read and edit them before you share the reports.');
+  }
+
+  async function createParentLinks() {
+    if (!brand.school.trim()) {
+      setError('Add your school name in the branding section first. Parents will see it at the top of the report.');
+      return;
+    }
+    if (!confirm(`Create a private link for each of the ${students.length} students? Each link opens only that student's report, with no sign-in. You can switch them all off later.`)) return;
+    setPublishing(true);
+    setError('');
+    setNotice('');
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const res = await fetch('/api/marking/share', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessionData?.session?.access_token}` },
+        body: JSON.stringify({
+          action: 'publish',
+          examIds: raw.exams.map((e) => e.id),
+          comments,
+          showPosition,
+          label: `${classFilter === 'all' ? 'All classes' : classFilter} · ${brand.term || dateText}`,
+          branding: { school: brand.school, term: brand.term, accent: brand.accent, logo: brand.logo },
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || 'Could not create the links.');
+      router.push(`/marking/shares?batch=${json.batchId}`);
+      return;
+    } catch (err) {
+      setError(err.message);
+    }
+    setPublishing(false);
+  }
+
   function downloadCsv() {
     const blob = new Blob([toCsv(visible, { includeClassStats: showPosition })], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -489,7 +618,36 @@ export default function MarkingReportsPage() {
             </section>
 
             <section className="surface" style={{ marginTop: 'var(--s-4)' }}>
-              <p className="section-heading" style={{ marginBottom: 8 }}>4. Print or download</p>
+              <p className="section-heading" style={{ marginBottom: 4 }}>4. Comments and parent links</p>
+              <p className="section-note" style={{ margin: '0 0 10px 0' }}>
+                Draft the teacher&apos;s comment for each student, edit it on the report card below, then create a private link for every parent.
+                {students.filter((st) => !(comments[st.key] || '').trim()).length > 0
+                  ? ` ${students.filter((st) => !(comments[st.key] || '').trim()).length} students have no comment yet.`
+                  : ' Every student has a comment.'}
+              </p>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                {!genC.running ? (
+                  <button type="button" className="btn-secondary" style={{ width: 'auto', marginTop: 0 }} disabled={students.every((st) => (comments[st.key] || '').trim())} onClick={draftComments}>
+                    Draft comments
+                  </button>
+                ) : (
+                  <>
+                    <span className="num">Writing... {genC.done} of {genC.total}</span>
+                    <button type="button" className="btn-quiet btn-sm" onClick={() => (stopCRef.current = true)}>Stop</button>
+                  </>
+                )}
+                <button type="button" className="btn-primary" style={{ width: 'auto', marginTop: 0 }} disabled={publishing || genC.running} onClick={createParentLinks}>
+                  {publishing ? 'Creating links...' : `Create parent links (${students.length})`}
+                </button>
+                <a style={{ cursor: 'pointer', fontSize: '0.875rem' }} onClick={() => router.push('/marking/shares')}>Links already created</a>
+              </div>
+              <p className="section-note" style={{ margin: '10px 0 0 0' }}>
+                Switch to the Report card tab in the next section to read and edit the comments. Links show the school branding, results, comment and recommendations, and stay active for 180 days.
+              </p>
+            </section>
+
+            <section className="surface" style={{ marginTop: 'var(--s-4)' }}>
+              <p className="section-heading" style={{ marginBottom: 8 }}>5. Print or download</p>
               <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
                 <div style={{ minWidth: 220 }}>
                   <label htmlFor="mr-student">Student</label>
@@ -525,7 +683,7 @@ export default function MarkingReportsPage() {
       <div style={{ marginTop: 24 }}>
         {report && mode === 'card' && visible.map((s) => (
           <ReportCard key={s.key} s={s} brand={brand} teacherName={teacherName} dateText={dateText} showPosition={showPosition}
-            comment={comments[s.key] || ''} onComment={(v) => setComments((prev) => ({ ...prev, [s.key]: v }))} />
+            comment={comments[s.key] || ''} onComment={(v) => updateComments({ [s.key]: v })} />
         ))}
         {report && mode === 'analysis' && visible.map((s) => (
           <Analysis key={s.key} s={s} brand={brand} dateText={dateText} onSaveRec={saveRec} />
