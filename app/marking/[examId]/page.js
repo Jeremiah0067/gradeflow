@@ -4,7 +4,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '../../../lib/supabaseClient';
-import { compressImage } from '../../../lib/imageCompress';
+import { compressImage, DATA_SAVER } from '../../../lib/imageCompress';
+import { withRetry, isTransient } from '../../../lib/netRetry';
+import { uploadScript } from '../../../lib/resumableUpload';
+import { saveDrafts, loadDrafts } from '../../../lib/draftStore';
 import { computeProgress, isGradable } from '../../../lib/jobProgress';
 import { Icon } from '../../../components/icons';
 import { Rail, NextAction } from '../../../components/marking/JobRail';
@@ -27,7 +30,7 @@ const STATUS_CHIP = {
 let draftCounter = 0;
 function newDraft() {
   draftCounter += 1;
-  return { key: `draft-${draftCounter}`, pages: [], studentId: '' };
+  return { key: `draft-${draftCounter}`, pages: [], studentId: '', paperId: '', doneIds: [] };
 }
 
 async function fetchAllStudents(examId) {
@@ -49,16 +52,26 @@ async function fetchAllStudents(examId) {
 }
 
 async function callGradeApi(paperId, force = false) {
-  const { data: sessionData } = await supabase.auth.getSession();
-  const token = sessionData?.session?.access_token;
-  const res = await fetch('/api/marking/grade-paper', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ paperId, force }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status}).`);
-  return data;
+  // A dropped connection is retried once. Marking is safe to repeat: a script that was already marked is skipped.
+  return withRetry(
+    async () => {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData?.session?.access_token;
+      const res = await fetch('/api/marking/grade-paper', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ paperId, force }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const err = new Error(data.error || `Request failed (${res.status}).`);
+        err.status = res.status;
+        throw err;
+      }
+      return data;
+    },
+    { attempts: 2, baseMs: 2000 }
+  );
 }
 
 export default function ExamWorkspacePage() {
@@ -83,22 +96,91 @@ export default function ExamWorkspacePage() {
   const [grading, setGrading] = useState(null); // { done, total, failed } while a batch is running
   const [retryingId, setRetryingId] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [dataSaver, setDataSaver] = useState(false);
+  const [online, setOnline] = useState(true);
+  const [saveWarning, setSaveWarning] = useState('');
+  const [retryNote, setRetryNote] = useState('');
+  const stopUploadRef = useRef(false);
+  const restoredRef = useRef(false);
+  const persistOkRef = useRef(true);
+  const uploadingRef = useRef(null);
   const cancelRef = useRef(false);
   const gradingRef = useRef(null);
 
   const draftsRef = useRef(drafts);
   draftsRef.current = drafts;
   gradingRef.current = grading;
+  uploadingRef.current = uploading;
 
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [examId]);
 
-  // Warn before leaving the page if there are photos that were not uploaded yet
+  // Know when the phone goes offline, so we can say so and wait instead of failing
+  useEffect(() => {
+    const update = () => setOnline(typeof navigator === 'undefined' || navigator.onLine !== false);
+    update();
+    window.addEventListener('online', update);
+    window.addEventListener('offline', update);
+    return () => {
+      window.removeEventListener('online', update);
+      window.removeEventListener('offline', update);
+    };
+  }, []);
+
+  // Bring back photos that were waiting to upload (after a refresh, a closed tab or a phone restart)
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const saved = await loadDrafts(examId);
+        if (!cancelled && saved.length > 0) {
+          setDrafts(
+            saved.map((r) => ({
+              ...newDraft(),
+              studentId: r.studentId,
+              paperId: r.paperId,
+              doneIds: r.doneIds,
+              pages: r.pages.map((p) => ({ id: p.id, blob: p.blob, url: URL.createObjectURL(p.blob) })),
+            }))
+          );
+          setShowAdd(true);
+          setNotice(`Restored ${saved.length} script${saved.length === 1 ? '' : 's'} from this phone. They have not been uploaded yet.`);
+        }
+      } catch {
+        // This phone cannot save photos; everything still works for this visit.
+      }
+      if (!cancelled) restoredRef.current = true;
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [examId]);
+
+  // Save the photos on the phone a moment after every change
+  useEffect(() => {
+    if (!restoredRef.current) return undefined;
+    const withPhotos = drafts.filter((d) => d.pages.length > 0);
+    const timer = setTimeout(async () => {
+      try {
+        await saveDrafts(examId, withPhotos);
+        persistOkRef.current = true;
+        setSaveWarning('');
+      } catch {
+        persistOkRef.current = withPhotos.length === 0;
+        if (withPhotos.length > 0) {
+          setSaveWarning('These photos could not be saved on this phone (its storage may be full). Keep this page open until they are uploaded.');
+        }
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [drafts, examId]);
+
+  // Warn before leaving the page if photos are uploading, grading is running, or photos could not be saved
   useEffect(() => {
     function onBeforeUnload(e) {
-      if (draftsRef.current.some((d) => d.pages.length > 0) || gradingRef.current) {
+      if ((draftsRef.current.some((d) => d.pages.length > 0) && !persistOkRef.current) || gradingRef.current || uploadingRef.current) {
         e.preventDefault();
         e.returnValue = '';
       }
@@ -209,6 +291,11 @@ export default function ExamWorkspacePage() {
   }
 
   function removeDraft(key) {
+    const gone = draftsRef.current.find((d) => d.key === key);
+    if (gone?.paperId && gone.doneIds?.length > 0) {
+      const paths = gone.doneIds.map((id) => `${userId}/${examId}/${gone.paperId}/${id}.jpg`);
+      supabase.storage.from(BUCKET).remove(paths).catch(() => {});
+    }
     setDrafts((prev) => {
       const target = prev.find((d) => d.key === key);
       target?.pages.forEach((p) => URL.revokeObjectURL(p.url));
@@ -248,7 +335,7 @@ export default function ExamWorkspacePage() {
       const added = [];
       for (const file of files) {
         if (!file.type.startsWith('image/')) throw new Error(`"${file.name}" is not a photo.`);
-        const blob = await compressImage(file);
+        const blob = await compressImage(file, dataSaver ? DATA_SAVER : undefined);
         added.push({
           id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
           blob,
@@ -263,37 +350,22 @@ export default function ExamWorkspacePage() {
   }
 
   async function uploadOneScript(draft) {
-    const { data: paper, error: paperErr } = await supabase
-      .from('exam_papers')
-      .insert({ exam_id: examId, student_id: draft.studentId || null, status: 'uploaded' })
-      .select('id')
-      .single();
-
-    if (paperErr) {
-      throw new Error(paperErr.code === '23505' ? 'That student already has a script uploaded.' : paperErr.message);
-    }
-
-    const uploadedPaths = [];
-    try {
-      for (let i = 0; i < draft.pages.length; i++) {
-        const path = `${userId}/${examId}/${paper.id}/${i + 1}.jpg`;
-        const { error: upErr } = await supabase.storage
-          .from(BUCKET)
-          .upload(path, draft.pages[i].blob, { contentType: 'image/jpeg', upsert: false });
-        if (upErr) throw new Error(upErr.message);
-        uploadedPaths.push(path);
-
-        const { error: pageErr } = await supabase
-          .from('exam_paper_pages')
-          .insert({ paper_id: paper.id, page_no: i + 1, storage_path: path, mime_type: 'image/jpeg' });
-        if (pageErr) throw new Error(pageErr.message);
-      }
-    } catch (err) {
-      // Clean up so a failed script never leaves half-uploaded pages behind
-      if (uploadedPaths.length > 0) await supabase.storage.from(BUCKET).remove(uploadedPaths);
-      await supabase.from('exam_papers').delete().eq('id', paper.id);
-      throw err;
-    }
+    await uploadScript({
+      supabase,
+      bucket: BUCKET,
+      userId,
+      examId,
+      draft,
+      retry: { onRetry: ({ attempt }) => setRetryNote(`The connection is weak. Trying again (attempt ${attempt + 1})...`) },
+      shouldStop: () => stopUploadRef.current,
+      onPaperId: (paperId) => setDrafts((prev) => prev.map((d) => (d.key === draft.key ? { ...d, paperId } : d))),
+      onPageDone: (pageId) =>
+        setDrafts((prev) => prev.map((d) => (d.key === draft.key ? { ...d, doneIds: [...(d.doneIds || []), pageId] } : d))),
+      onProgress: ({ page, pages }) => {
+        setRetryNote('');
+        setUploading((u) => (u ? { ...u, page, pages } : u));
+      },
+    });
   }
 
   async function handleUploadAll() {
@@ -312,18 +384,34 @@ export default function ExamWorkspacePage() {
       return;
     }
 
-    setUploading({ done: 0, total: ready.length });
+    stopUploadRef.current = false;
+    setRetryNote('');
+    setUploading({ done: 0, total: ready.length, page: 0, pages: 0 });
     const succeeded = new Set();
     const failures = [];
+    let stopped = false;
 
     for (let i = 0; i < ready.length; i++) {
+      if (stopUploadRef.current) {
+        stopped = true;
+        break;
+      }
       try {
         await uploadOneScript(ready[i]);
         succeeded.add(ready[i].key);
       } catch (err) {
-        failures.push(`Script ${drafts.findIndex((d) => d.key === ready[i].key) + 1}: ${err.message}`);
+        if (err.stopped) {
+          stopped = true;
+          break;
+        }
+        const label = `Script ${drafts.findIndex((d) => d.key === ready[i].key) + 1}`;
+        failures.push(
+          isTransient(err)
+            ? `${label}: the connection kept dropping. Your photos are saved on this phone. Tap Upload again when the signal is better.`
+            : `${label}: ${err.message}`
+        );
       }
-      setUploading({ done: i + 1, total: ready.length });
+      setUploading({ done: i + 1, total: ready.length, page: 0, pages: 0 });
     }
 
     // Keep only the scripts that failed, so the teacher can retry them
@@ -334,7 +422,9 @@ export default function ExamWorkspacePage() {
     });
 
     setUploading(null);
+    setRetryNote('');
     if (succeeded.size > 0) setNotice(`${succeeded.size} script${succeeded.size === 1 ? '' : 's'} uploaded.`);
+    if (stopped) setNotice((n) => `${n ? `${n} ` : ''}Upload stopped. The rest are saved on this phone.`);
     if (failures.length > 0) setError(failures.join(' | '));
     await load(false);
   }
@@ -478,6 +568,8 @@ export default function ExamWorkspacePage() {
   }
 
   const draftsWithPages = drafts.filter((d) => d.pages.length > 0).length;
+  const photoCount = drafts.reduce((n, d) => n + d.pages.length, 0);
+  const photoMb = drafts.reduce((n, d) => n + d.pages.reduce((m, p) => m + (p.blob?.size || 0), 0), 0) / (1024 * 1024);
   const missingStudents = students.filter((st) => !studentIdsWithScript.has(st.id));
   const addOpen = showAdd || papers.length === 0;
   const progress = computeProgress({ questionCount: questions.length, rosterCount: students.length, papers });
@@ -597,6 +689,16 @@ export default function ExamWorkspacePage() {
         {addOpen && (
           <div id="add-scripts" className="surface">
             <h3>Add scripts</h3>
+            {!online && (
+              <p className="alert alert-warn" role="status">
+                You are offline. Your photos are saved on this phone, and uploading continues when the connection is back.
+              </p>
+            )}
+            {saveWarning && (
+              <p className="alert alert-warn" role="status">
+                {saveWarning}
+              </p>
+            )}
             <p className="section-note">
               One card for each student. Photograph every page of that script, in order. On a phone, the camera opens straight away.
             </p>
@@ -651,17 +753,38 @@ export default function ExamWorkspacePage() {
               </div>
             ))}
 
+            {photoCount > 0 && (
+              <p className="section-note" style={{ margin: 'var(--s-4) 0 0 0' }}>
+                Ready to upload: <strong className="num">{draftsWithPages}</strong> {draftsWithPages === 1 ? 'script' : 'scripts'},{' '}
+                <strong className="num">{photoCount}</strong> {photoCount === 1 ? 'photo' : 'photos'}, about{' '}
+                <strong className="num">{photoMb < 10 ? photoMb.toFixed(1) : Math.round(photoMb)} MB</strong> of data.
+                {retryNote ? ` ${retryNote}` : ''}
+              </p>
+            )}
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 'var(--s-3) 0 0 0', fontWeight: 400 }}>
+              <input type="checkbox" style={{ width: 'auto' }} checked={dataSaver} onChange={(e) => setDataSaver(e.target.checked)} disabled={!!uploading} />
+              <span>
+                Data saver: smaller photos for slow or expensive data
+                <span className="hint"> Affects photos you add from now on. Very small handwriting may be harder for the AI to read.</span>
+              </span>
+            </label>
+
             <div style={{ display: 'flex', gap: 'var(--s-3)', alignItems: 'center', flexWrap: 'wrap', marginTop: 'var(--s-4)' }}>
               <button type="button" disabled={draftsWithPages === 0 || !!uploading || !!preparingKey} onClick={handleUploadAll}>
                 <Icon name="upload" size={18} />
                 {uploading
-                  ? `Uploading ${uploading.done} of ${uploading.total}...`
+                  ? `Uploading script ${Math.min(uploading.done + 1, uploading.total)} of ${uploading.total}${uploading.pages ? `, photo ${uploading.page} of ${uploading.pages}` : ''}...`
                   : `Upload ${draftsWithPages > 0 ? draftsWithPages : ''} ${draftsWithPages === 1 ? 'script' : 'scripts'}`.replace('  ', ' ')}
               </button>
               <button type="button" className="btn-secondary" onClick={addDraft} disabled={!!uploading}>
                 <Icon name="plus" size={18} />
                 Another script
               </button>
+              {uploading && (
+                <button type="button" className="btn-quiet" onClick={() => (stopUploadRef.current = true)}>
+                  Stop
+                </button>
+              )}
             </div>
           </div>
         )}
