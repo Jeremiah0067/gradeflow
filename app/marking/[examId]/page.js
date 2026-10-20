@@ -7,6 +7,7 @@ import { supabase } from '../../../lib/supabaseClient';
 import { compressImage, DATA_SAVER } from '../../../lib/imageCompress';
 import { withRetry, isTransient } from '../../../lib/netRetry';
 import { uploadScript } from '../../../lib/resumableUpload';
+import { runGradingQueue } from '../../../lib/gradeQueue';
 import { displayReg, studentLabel } from '../../../lib/studentIds';
 import { saveDrafts, loadDrafts } from '../../../lib/draftStore';
 import { computeProgress, isGradable } from '../../../lib/jobProgress';
@@ -482,56 +483,35 @@ export default function ExamWorkspacePage() {
         .in('status', ['uploaded', 'failed']);
     }
 
-    const queue = [...ids];
-    const problems = [];
-    let done = 0;
-    let failed = 0;
-    let skipped = 0;
-    let escalated = 0;
-    let limitMessage = '';
-    setGrading({ done: 0, total: ids.length, failed: 0 });
+    setGrading({ done: 0, total: ids.length, failed: 0, pause: 0 });
 
-    async function worker() {
-      while (queue.length > 0 && !cancelRef.current) {
-        const id = queue.shift();
-        try {
-          const result = await callGradeApi(id, false);
-          if (result.budgetReached) {
-            // Out of budget: stop everyone. Scripts not yet graded stay queued, nothing is lost.
-            skipped += 1;
-            limitMessage = result.error;
-            cancelRef.current = true;
-          } else if (result.ok === false) {
-            failed += 1;
-            problems.push(result.error);
-          } else if (result.skipped) {
-            skipped += 1;
-          } else {
-            if (result.escalated) escalated += 1;
-          }
-        } catch (err) {
-          failed += 1;
-          problems.push(err.message);
-        }
-        done += 1;
-        setGrading({ done, total: ids.length, failed });
-        if (done % 4 === 0) load(false);
-      }
-    }
-
-    await Promise.all(Array.from({ length: Math.min(GRADING_CONCURRENCY, ids.length) }, worker));
+    // If the AI service says it is busy, the queue waits as long as it asks and carries on by itself.
+    const summary = await runGradingQueue({
+      ids,
+      callGrade: (id) => callGradeApi(id, false),
+      concurrency: GRADING_CONCURRENCY,
+      shouldStop: () => cancelRef.current,
+      onProgress: (st) => {
+        setGrading((g) => ({ done: st.done, total: ids.length, failed: st.failed, pause: g?.pause || 0 }));
+        if (st.done % 4 === 0) load(false);
+      },
+      onPause: (secs) => setGrading((g) => (g ? { ...g, pause: secs } : g)),
+    });
 
     setGrading(null);
-    const graded = done - failed - skipped;
-    const notLeftBehind = queue.length;
+    const graded = summary.done - summary.failed - summary.skipped;
     const parts = [`${graded} graded`];
-    if (failed) parts.push(`${failed} failed`);
-    if (escalated) parts.push(`${escalated} re-checked by the stronger model`);
+    if (summary.failed) parts.push(`${summary.failed} failed`);
+    if (summary.escalated) parts.push(`${summary.escalated} re-checked by the stronger model`);
     let message = `${parts.join(', ')}.`;
-    if (limitMessage) message += ` ${limitMessage}`;
-    else if (cancelRef.current && notLeftBehind > 0) message += ` Stopped early with ${notLeftBehind} left in the queue.`;
+    if (summary.limitMessage) {
+      message += ` ${summary.limitMessage}`;
+      if (summary.remaining > 0) message += ` ${summary.remaining} ${summary.remaining === 1 ? 'script is' : 'scripts are'} still queued.`;
+    } else if (summary.stopped && summary.remaining > 0) {
+      message += ` Stopped early with ${summary.remaining} left in the queue.`;
+    }
     setNotice(message);
-    if (problems.length > 0) setError(`Some scripts failed: ${[...new Set(problems)].slice(0, 3).join(' | ')}`);
+    if (summary.problems.length > 0) setError(`Some scripts failed: ${[...new Set(summary.problems)].slice(0, 3).join(' | ')}`);
     await load(false);
   }
 
@@ -622,6 +602,11 @@ export default function ExamWorkspacePage() {
               <span style={{ width: `${Math.round((grading.done / grading.total) * 100)}%` }} />
             </div>
             {grading.failed > 0 && <p className="hint" style={{ margin: '6px 0 0 0' }}>{grading.failed} failed so far</p>}
+            {grading.pause > 0 && (
+              <p className="hint" role="status" style={{ margin: '6px 0 0 0' }}>
+                The AI service is busy. Waiting {grading.pause} {grading.pause === 1 ? 'second' : 'seconds'}, then continuing by itself. Nothing is lost.
+              </p>
+            )}
           </div>
           <button type="button" className="btn-secondary" onClick={() => { cancelRef.current = true; }}>
             Stop after current scripts
