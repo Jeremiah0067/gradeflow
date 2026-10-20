@@ -3,6 +3,10 @@ import { gradeExamPaper } from '../../../../lib/gradeExamPaper';
 import { isAdminUser, BUDGET_TEACHER_MESSAGE } from '../../../../lib/adminAuth';
 import { checkCredits, chargeScript } from '../../../../lib/credits';
 
+const BUSY_TEACHER_MESSAGE = 'The AI service is busy right now. GradeFlow will wait a moment and carry on by itself.';
+const DAILY_LIMIT_TEACHER_MESSAGE =
+  'The AI service has reached its limit for today. Your remaining scripts are saved in the queue. Please try again later, or ask your administrator.';
+
 // Grading one script with photos can take a while. Raise this if your Vercel plan allows more.
 export const maxDuration = 60;
 
@@ -57,10 +61,14 @@ export async function POST(req) {
       await chargeScript(service, { schoolId: credits.schoolId, paperId, examId: paper?.exam_id, userId: user.id });
     }
 
-    // Teachers never receive dollar amounts. Only administrators do.
+    // Teachers never receive dollar amounts or the AI provider's technical messages. Administrators get the detail.
     if (!(await isAdminUser(user.id))) {
       delete result.costUsd;
+      delete result.freeTier;
       if (result.budgetReached) result.error = BUDGET_TEACHER_MESSAGE;
+      if (result.rateLimited) result.error = result.dailyLimit ? DAILY_LIMIT_TEACHER_MESSAGE : BUSY_TEACHER_MESSAGE;
+    } else if (result.rateLimited && result.freeTier) {
+      result.error = `${result.error} (Admin note: the Gemini key is on the free tier, which allows very few requests per minute. Turn on billing for the Google project to raise the limits.)`;
     }
     return Response.json(result);
   } catch (err) {
