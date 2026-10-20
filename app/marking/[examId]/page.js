@@ -7,6 +7,7 @@ import { supabase } from '../../../lib/supabaseClient';
 import { compressImage, DATA_SAVER } from '../../../lib/imageCompress';
 import { withRetry, isTransient } from '../../../lib/netRetry';
 import { uploadScript } from '../../../lib/resumableUpload';
+import { displayReg, studentLabel } from '../../../lib/studentIds';
 import { saveDrafts, loadDrafts } from '../../../lib/draftStore';
 import { computeProgress, isGradable } from '../../../lib/jobProgress';
 import { Icon } from '../../../components/icons';
@@ -746,7 +747,7 @@ export default function ExamWorkspacePage() {
                   <option value="">Let the AI read the name</option>
                   {studentsAvailableForDraft(draft.key).map((st) => (
                     <option key={st.id} value={st.id}>
-                      {st.full_name} ({st.reg_no})
+                      {studentLabel(st)}
                     </option>
                   ))}
                 </select>
@@ -814,7 +815,7 @@ export default function ExamWorkspacePage() {
                     <div className="meta">
                       <span className="num">
                         {student
-                          ? student.reg_no
+                          ? displayReg(student.reg_no) || 'Student assigned'
                           : paper.detected_name || paper.detected_reg_no
                             ? `AI read: ${[paper.detected_name, paper.detected_reg_no].filter(Boolean).join(', ')}`
                             : 'The AI will read the name'}
@@ -849,7 +850,7 @@ export default function ExamWorkspacePage() {
                         <option value="">Choose a student...</option>
                         {pickable.map((st) => (
                           <option key={st.id} value={st.id}>
-                            {st.full_name} ({st.reg_no})
+                            {studentLabel(st)}
                           </option>
                         ))}
                       </select>
@@ -884,7 +885,7 @@ export default function ExamWorkspacePage() {
               {missingStudents.map((st) => (
                 <li key={st.id}>
                   <span>{st.full_name}</span>
-                  <span>{st.reg_no}</span>
+                  <span>{displayReg(st.reg_no)}</span>
                 </li>
               ))}
             </ul>
