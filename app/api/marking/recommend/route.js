@@ -109,6 +109,9 @@ Reply with JSON only: {"recommendation": "..."}`;
 
     return Response.json({ ok: true, text });
   } catch (err) {
+    if (err.rateLimited) {
+      return Response.json({ error: 'The AI service is busy right now. Please wait a minute and try again.', rateLimited: true }, { status: 429 });
+    }
     return Response.json({ error: err.message || 'Something went wrong.' }, { status: 500 });
   }
 }
