@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '../../../../lib/supabaseClient';
+import { displayReg, studentLabel } from '../../../../lib/studentIds';
 import {
   sortForReview,
   isBulkEligible,
@@ -598,7 +599,7 @@ export default function ReviewPage() {
                   <h2 style={{ margin: 0, fontSize: '1.125rem' }}>{nameOf(selected)}</h2>
                   <p className="meta num" style={{ marginTop: 2 }}>
                     <span>{idx + 1} of {visiblePapers.length}</span>
-                    {studentById[selected.student_id] && <span>{studentById[selected.student_id].reg_no}</span>}
+                    {studentById[selected.student_id] && displayReg(studentById[selected.student_id].reg_no) && <span>{displayReg(studentById[selected.student_id].reg_no)}</span>}
                     {selected.escalated && <span>Re-checked by the stronger model</span>}
                   </p>
                 </div>
@@ -655,7 +656,7 @@ export default function ReviewPage() {
                   <select id="rv-student" value={draftStudentId} onChange={(e) => setDraftStudentId(e.target.value)} disabled={busy} style={{ marginBottom: 'var(--s-4)' }}>
                     <option value="">Not assigned. Choose a student</option>
                     {pickableStudents.map((st) => (
-                      <option key={st.id} value={st.id}>{st.full_name} ({st.reg_no})</option>
+                      <option key={st.id} value={st.id}>{studentLabel(st)}</option>
                     ))}
                   </select>
 
