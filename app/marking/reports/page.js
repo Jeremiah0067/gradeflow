@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../../lib/supabaseClient';
 import { buildMarkingReports, toCsv, pctText } from '../../../lib/markingReports';
+import { checkAssignment, isMixup } from '../../../lib/assignmentCheck';
 
 const BRAND_KEY = 'gf-report-brand'; // same key as the class report cards, so branding is set once
 const DEFAULT_BRAND = { school: '', term: '', accent: '#2340b4', logo: '' };
@@ -281,6 +282,24 @@ export default function MarkingReportsPage() {
   }
 
   const report = useMemo(() => (raw ? buildMarkingReports(raw) : null), [raw]);
+
+  // Approved scripts where the name on the paper disagrees with the student they were given to.
+  // Checked here too, so a mix-up is caught before a report is printed or a link is sent to a parent.
+  const nameWarnings = useMemo(() => {
+    if (!raw) return [];
+    const byId = Object.fromEntries(raw.students.map((st) => [st.id, st]));
+    const examTitle = Object.fromEntries(raw.exams.map((e) => [e.id, e.title]));
+    return raw.papers
+      .filter((p) => p.status === 'approved' && p.student_id && byId[p.student_id])
+      .map((p) => {
+        const roster = raw.students.filter((st) => st.exam_id === p.exam_id);
+        const result = checkAssignment(p, byId[p.student_id], roster);
+        return isMixup(result)
+          ? { paperId: p.id, examId: p.exam_id, exam: examTitle[p.exam_id], name: byId[p.student_id].full_name, message: result.message }
+          : null;
+      })
+      .filter(Boolean);
+  }, [raw]);
   const students = report?.students || [];
   const visible = selectedStudent === 'all' ? students : students.filter((s) => s.key === selectedStudent);
   const missingRecs = report ? students.flatMap((s) => s.rows.filter((r) => !r.recommendation).map((r) => r.paperId)) : [];
@@ -448,7 +467,8 @@ export default function MarkingReportsPage() {
       setError('Add your school name in the branding section first. Parents will see it at the top of the report.');
       return;
     }
-    if (!confirm(`Create a private link for each of the ${students.length} students? Each link opens only that student's report, with no sign-in. You can switch them all off later.`)) return;
+    const warnNote = nameWarnings.length > 0 ? `\n\nWARNING: ${nameWarnings.length} approved ${nameWarnings.length === 1 ? 'script may be' : 'scripts may be'} assigned to the wrong student (see the warning above). Parents would see those results.` : '';
+    if (!confirm(`Create a private link for each of the ${students.length} students? Each link opens only that student's report, with no sign-in. You can switch them all off later.${warnNote}`)) return;
     setPublishing(true);
     setError('');
     setNotice('');
@@ -584,6 +604,24 @@ export default function MarkingReportsPage() {
 
         {report && report.classSize > 0 && (
           <>
+            {nameWarnings.length > 0 && (
+              <div className="alert alert-warn" role="alert" style={{ marginTop: 'var(--s-4)', display: 'block' }}>
+                <strong>
+                  {nameWarnings.length} approved {nameWarnings.length === 1 ? 'script may be' : 'scripts may be'} assigned to the wrong student.
+                </strong>{' '}
+                The name on the paper does not match. Check {nameWarnings.length === 1 ? 'it' : 'them'} before you print or share anything.
+                <ul style={{ margin: '8px 0 0 0', paddingLeft: 18 }}>
+                  {nameWarnings.slice(0, 8).map((w) => (
+                    <li key={w.paperId} style={{ marginBottom: 4 }}>
+                      <strong>{w.name}</strong> ({w.exam}): {w.message}{' '}
+                      <a style={{ cursor: 'pointer', fontWeight: 600 }} onClick={() => router.push(`/marking/${w.examId}/review`)}>Open review</a>
+                    </li>
+                  ))}
+                </ul>
+                {nameWarnings.length > 8 && <p style={{ margin: '6px 0 0 0' }}>and {nameWarnings.length - 8} more.</p>}
+              </div>
+            )}
+
             <section className="surface" style={{ marginTop: 'var(--s-4)' }}>
               <p className="section-heading" style={{ marginBottom: 8 }}>2. School branding</p>
               <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))' }}>
