@@ -13,11 +13,14 @@ import {
   BULK_MIN_MEAN,
 } from '../../../../lib/reviewHelpers';
 import { toCsv } from '../../../../lib/csv';
+import { checkAll, isMixup } from '../../../../lib/assignmentCheck';
+import { logEvent, logManyEvents, marksChanges, describeEvent, undoableIds } from '../../../../lib/paperEvents';
 import { Icon } from '../../../../components/icons';
 import PenScore from '../../../../components/ui/PenScore';
 import { buildExportTable, downloadCsv, exportFileName } from '../../../../lib/exportResults';
 
 const BUCKET = 'exam-papers';
+const LINKS_REMINDER = ' If you already sent parent links, create new ones and switch the old set off, because the old links still show the old result.';
 const GRADED = ['needs_review', 'flagged', 'approved'];
 const STATUS_CHIP = {
   needs_review: { label: 'To review', cls: 'chip-blue' },
@@ -80,6 +83,13 @@ export default function ReviewPage() {
   const [draftComment, setDraftComment] = useState('');
   const [draftStudentId, setDraftStudentId] = useState('');
 
+  // Corrections: who is logged in, the history of the open script, and the swap choice
+  const [userId, setUserId] = useState('');
+  const [events, setEvents] = useState([]);
+  const [eventsTick, setEventsTick] = useState(0);
+  const [eventsMissing, setEventsMissing] = useState(false);
+  const [swapWith, setSwapWith] = useState('');
+
   // Export panel
   const [exportOpen, setExportOpen] = useState(false);
   const [exportData, setExportData] = useState(null); // { papers, scores } fetched fresh when opened
@@ -100,6 +110,7 @@ export default function ReviewPage() {
       router.push('/login');
       return;
     }
+    setUserId(session.user.id);
     const { data: profile } = await supabase.from('users').select('role').eq('id', session.user.id).maybeSingle();
     if (!profile) {
       router.push('/select-role');
@@ -171,14 +182,19 @@ export default function ReviewPage() {
     const approved = papers.filter((p) => p.status === 'approved').length;
     return { approved, todo: papers.length - approved, all: papers.length };
   }, [papers]);
+  // Does the name on each paper agree with the student it is assigned to?
+  const checks = useMemo(() => checkAll(papers, students), [papers, students]);
+  const mixups = useMemo(() => papers.filter((p) => isMixup(checks[p.id])), [papers, checks]);
   const visiblePapers = useMemo(() => {
+    if (tab === 'check') return sortedPapers.filter((p) => isMixup(checks[p.id]));
     if (tab === 'approved') return sortedPapers.filter((p) => p.status === 'approved');
     if (tab === 'todo') return sortedPapers.filter((p) => p.status !== 'approved');
     return sortedPapers;
-  }, [sortedPapers, tab]);
+  }, [sortedPapers, tab, checks]);
+  // A script with a name that disagrees with its student is never approved in bulk
   const bulkEligible = useMemo(
-    () => papers.filter((p) => isBulkEligible(p, scoresByPaper[p.id])),
-    [papers, scoresByPaper]
+    () => papers.filter((p) => isBulkEligible(p, scoresByPaper[p.id]) && !isMixup(checks[p.id])),
+    [papers, scoresByPaper, checks]
   );
 
   // Keep a script selected whenever there is one
@@ -197,6 +213,30 @@ export default function ReviewPage() {
     () => Object.fromEntries(selectedScores.map((s) => [s.question_id, s])),
     [selectedScores]
   );
+
+  // The history of changes for the open script
+  useEffect(() => {
+    if (!selected) {
+      setEvents([]);
+      return undefined;
+    }
+    let cancelled = false;
+    (async () => {
+      const { data, error: err } = await supabase
+        .from('exam_paper_events')
+        .select('*')
+        .eq('paper_id', selected.id)
+        .order('created_at', { ascending: false })
+        .limit(15);
+      if (cancelled) return;
+      setEventsMissing(!!err);
+      setEvents(err ? [] : data || []);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.id, eventsTick]);
 
   // Load the editing fields and photos whenever a different script (or fresh data) is shown
   useEffect(() => {
@@ -281,6 +321,11 @@ export default function ReviewPage() {
       visiblePapers.find((p) => p.id !== selected.id && p.status !== 'approved')?.id ||
       null;
 
+    // What is about to change, worked out before anything is saved
+    const changes = marksChanges(questions, scoreByQuestion, draftMarks);
+    const studentChanged = (draftStudentId || '') !== (selected.student_id || '');
+    const wasApproved = selected.status === 'approved';
+
     setBusy(true);
     try {
       await Promise.all(
@@ -307,8 +352,18 @@ export default function ReviewPage() {
       const { error: paperErr } = await supabase.from('exam_papers').update(update).eq('id', selected.id);
       if (paperErr) throw new Error(paperErr.code === '23505' ? 'That student already has another script.' : paperErr.message);
 
+      const log = { examId, paperId: selected.id, userId };
+      if (changes.length > 0) await logEvent(supabase, { ...log, kind: 'marks_changed', detail: { changes } });
+      if (studentChanged) await logEvent(supabase, { ...log, kind: 'student_changed', detail: { from: selected.student_id || null, to: draftStudentId || null } });
+      if (approve) await logEvent(supabase, { ...log, kind: 'approved' });
+      setEventsTick((t) => t + 1);
+
       await load(false);
-      setNotice(approve ? `Approved ${studentById[draftStudentId]?.full_name || 'script'}.` : 'Changes saved.');
+      const changedAfterApproval = wasApproved && (changes.length > 0 || studentChanged);
+      setNotice(
+        (approve ? `Approved ${studentById[draftStudentId]?.full_name || 'script'}.` : 'Changes saved.') +
+          (changedAfterApproval ? LINKS_REMINDER : '')
+      );
       if (approve && nextId) setSelectedId(nextId);
     } catch (err) {
       setError(err.message);
@@ -325,6 +380,11 @@ export default function ReviewPage() {
       .update({ status: 'needs_review', approved_at: null })
       .eq('id', selected.id);
     if (err) setError(err.message);
+    else {
+      await logEvent(supabase, { examId, paperId: selected.id, userId, kind: 'unapproved' });
+      setEventsTick((t) => t + 1);
+      setNotice(`Unapproved.${LINKS_REMINDER}`);
+    }
     await load(false);
     setBusy(false);
   }
@@ -340,7 +400,11 @@ export default function ReviewPage() {
     try {
       const result = await callGradeApi(selected.id, true);
       if (result.ok === false) setError(result.error);
-      else setNotice('Graded again.');
+      else {
+        setNotice('Graded again.');
+        await logEvent(supabase, { examId, paperId: selected.id, userId, kind: 'regraded' });
+        setEventsTick((t) => t + 1);
+      }
     } catch (err) {
       setError(err.message);
     }
@@ -348,8 +412,83 @@ export default function ReviewPage() {
     setBusy(false);
   }
 
+  // Swap the students of two scripts in one step (a student can only have one script, so this is awkward by hand)
+  async function handleSwap(otherId) {
+    const other = papers.find((p) => p.id === otherId);
+    if (!selected || !other) return;
+    const a = nameOf(selected);
+    const b = nameOf(other);
+    if (!confirm(`Swap students?\n\n${a} will be put on the script that is now ${b}, and ${b} on the script that is now ${a}. The marks stay with each script.`)) return;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    const { error: err } = await supabase.rpc('swap_paper_students', { p_a: selected.id, p_b: other.id });
+    if (err) {
+      setError(/does not exist|schema cache/i.test(err.message) ? 'Swapping needs one setup step first: run corrections.sql in Supabase.' : err.message);
+    } else {
+      setSwapWith('');
+      setEventsTick((t) => t + 1);
+      setNotice(`Students swapped.${selected.status === 'approved' || other.status === 'approved' ? LINKS_REMINDER : ''}`);
+    }
+    await load(false);
+    setBusy(false);
+  }
+
+  // Put back what a recorded change replaced
+  async function handleUndo(ev) {
+    if (!selected) return;
+    if (dirty && !confirm('You have unsaved changes on this script. They will be lost. Continue?')) return;
+    if (!confirm(`Undo this change?\n\n${describeEvent(ev, studentById)}`)) return;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const log = { examId, paperId: selected.id, userId };
+      if (ev.kind === 'marks_changed') {
+        const changes = ev.detail?.changes || [];
+        for (const c of changes) {
+          const sc = selectedScores.find((x) => x.question_id === c.question_id);
+          const { error: e1 } = await supabase
+            .from('exam_scores')
+            .update({ final_marks: c.from, overridden: sc ? Number(sc.ai_marks) !== Number(c.from) : true })
+            .eq('paper_id', selected.id)
+            .eq('question_id', c.question_id);
+          if (e1) throw new Error(e1.message);
+        }
+        // The new total comes from what is saved now, so it can never disagree with the question marks
+        const { data: rows, error: e2 } = await supabase.from('exam_scores').select('final_marks, ai_marks').eq('paper_id', selected.id);
+        if (e2) throw new Error(e2.message);
+        const total = (rows || []).reduce((n, r) => n + Number(r.final_marks ?? r.ai_marks ?? 0), 0);
+        const { error: e3 } = await supabase.from('exam_papers').update({ final_total: total }).eq('id', selected.id);
+        if (e3) throw new Error(e3.message);
+        await logEvent(supabase, {
+          ...log,
+          kind: 'marks_changed',
+          detail: { undo: true, of: ev.id, changes: changes.map((c) => ({ question_id: c.question_id, label: c.label, from: c.to, to: c.from })) },
+        });
+      } else if (ev.kind === 'student_changed') {
+        const back = ev.detail?.from || null;
+        const update = { student_id: back };
+        if (!back && selected.status === 'approved') {
+          update.status = 'needs_review'; // an approved script must have a student
+          update.approved_at = null;
+        }
+        const { error: e1 } = await supabase.from('exam_papers').update(update).eq('id', selected.id);
+        if (e1) throw new Error(e1.code === '23505' ? 'That student now has another script. Use "Swap with another script" instead.' : e1.message);
+        await logEvent(supabase, { ...log, kind: 'student_changed', detail: { undo: true, of: ev.id, from: ev.detail?.to ?? null, to: back } });
+      }
+      setNotice(`Change undone.${selected.status === 'approved' ? LINKS_REMINDER : ''}`);
+      setEventsTick((t) => t + 1);
+      await load(false);
+    } catch (err) {
+      setError(err.message);
+    }
+    setBusy(false);
+  }
+
   async function handleBulkApprove() {
     if (bulkEligible.length === 0) return;
+    const heldBack = papers.filter((p) => isBulkEligible(p, scoresByPaper[p.id]) && isMixup(checks[p.id])).length;
     const ok = confirm(
       `Approve ${bulkEligible.length} script${bulkEligible.length === 1 ? '' : 's'} where the AI was confident?\\n\\nOnly scripts that are assigned to a student, not flagged, at least ${Math.round(
         BULK_MIN_MEAN * 100
@@ -370,8 +509,12 @@ export default function ReviewPage() {
           .eq('status', 'needs_review');
         if (err) throw new Error(err.message);
       }
+      await logManyEvents(supabase, { examId, userId, paperIds: ids, kind: 'bulk_approved' });
       await load(false);
-      setNotice(`Approved ${ids.length} script${ids.length === 1 ? '' : 's'}.`);
+      setNotice(
+        `Approved ${ids.length} script${ids.length === 1 ? '' : 's'}.` +
+          (heldBack > 0 ? ` ${heldBack} more ${heldBack === 1 ? 'was' : 'were'} held back because the name on the paper does not match the student. Check ${heldBack === 1 ? 'it' : 'them'} first.` : '')
+      );
     } catch (err) {
       setError(err.message);
     }
@@ -556,6 +699,7 @@ export default function ReviewPage() {
               {tabButton('todo', 'To review', counts.todo)}
               {tabButton('approved', 'Approved', counts.approved)}
               {tabButton('all', 'All', counts.all)}
+              {mixups.length > 0 && tabButton('check', 'Check name', mixups.length)}
             </div>
             <div className="rows rv-list">
               {visiblePapers.length === 0 ? (
@@ -574,6 +718,7 @@ export default function ReviewPage() {
                       <span className="rv-item-sub">
                         <span className={`chip ${chip.cls}`}>{chip.label}</span>
                         {!p.student_id && <span className="chip chip-amber">No student</span>}
+                        {isMixup(checks[p.id]) && <span className="chip chip-amber">Check name</span>}
                         <ConfidenceBadge value={p.ai_confidence} />
                       </span>
                     </button>
@@ -638,6 +783,33 @@ export default function ReviewPage() {
                 </div>
               )}
 
+              {isMixup(checks[selected.id]) && draftStudentId === (selected.student_id || '') && (
+                <div className="alert alert-warn" role="alert" style={{ marginBottom: 'var(--s-4)' }}>
+                  <span>
+                    <strong>Check this student.</strong> {checks[selected.id].message}
+                    {(() => {
+                      const suggestedId = checks[selected.id].suggestedStudentId;
+                      if (!suggestedId) return null;
+                      const holder = papers.find((p) => p.id !== selected.id && p.student_id === suggestedId);
+                      return (
+                        <span style={{ display: 'block', marginTop: 8 }}>
+                          {holder ? (
+                            <button type="button" className="btn-secondary btn-sm" disabled={busy || dirty} onClick={() => handleSwap(holder.id)}>
+                              Swap with {studentById[suggestedId]?.full_name}&apos;s script
+                            </button>
+                          ) : (
+                            <button type="button" className="btn-secondary btn-sm" disabled={busy} onClick={() => setDraftStudentId(suggestedId)}>
+                              Assign to {studentById[suggestedId]?.full_name}
+                            </button>
+                          )}
+                          {dirty && holder ? ' Save your changes first.' : ''}
+                        </span>
+                      );
+                    })()}
+                  </span>
+                </div>
+              )}
+
               <div className="rv-detail">
                 <div className="rv-pages">
                   {pageUrls.length === 0 ? (
@@ -659,6 +831,29 @@ export default function ReviewPage() {
                       <option key={st.id} value={st.id}>{studentLabel(st)}</option>
                     ))}
                   </select>
+                  {checks[selected.id]?.level === 'unverified' && (
+                    <p className="hint" style={{ marginTop: 'calc(-1 * var(--s-3))', marginBottom: 'var(--s-4)' }}>{checks[selected.id].message}</p>
+                  )}
+                  {selected.student_id && (
+                    <details style={{ margin: '0 0 var(--s-4) 0' }}>
+                      <summary style={{ cursor: 'pointer', fontSize: '0.875rem' }}>Wrong student? Swap with another script</summary>
+                      <p className="section-note" style={{ margin: 'var(--s-2) 0' }}>
+                        Use this when two scripts were given each other&apos;s name. The students trade places and the marks stay with each script.
+                      </p>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <select value={swapWith} onChange={(e) => setSwapWith(e.target.value)} disabled={busy} style={{ maxWidth: 260 }} aria-label="Script to swap with">
+                          <option value="">Choose the other script...</option>
+                          {sortedPapers.filter((p) => p.id !== selected.id && p.student_id).map((p) => (
+                            <option key={p.id} value={p.id}>{nameOf(p)}</option>
+                          ))}
+                        </select>
+                        <button type="button" className="btn-secondary btn-sm" disabled={busy || dirty || !swapWith} onClick={() => handleSwap(swapWith)}>
+                          Swap students
+                        </button>
+                      </div>
+                      {dirty && <p className="hint">Save your changes on this script first.</p>}
+                    </details>
+                  )}
 
                   {questions.map((q) => {
                     const sc = scoreByQuestion[q.id];
@@ -722,6 +917,32 @@ export default function ReviewPage() {
                       )}
                     </div>
                   </div>
+
+                  <details className="qmark">
+                    <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
+                      History of changes{events.length > 0 ? ` (${events.length})` : ''}
+                    </summary>
+                    {eventsMissing && (
+                      <p className="section-note">History needs one setup step: run corrections.sql in Supabase.</p>
+                    )}
+                    {!eventsMissing && events.length === 0 && <p className="section-note">No changes recorded for this script yet.</p>}
+                    {(() => {
+                      const undoable = undoableIds(events);
+                      return events.map((ev) => (
+                        <div key={ev.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '8px 0', borderTop: '1px solid var(--rule)', fontSize: '0.875rem' }}>
+                          <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>
+                            {describeEvent(ev, studentById)}
+                            <span className="section-note" style={{ margin: 0 }}>
+                              {' '}· {new Date(ev.created_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          </span>
+                          {undoable.has(ev.id) && (
+                            <button type="button" className="btn-quiet btn-sm" disabled={busy} onClick={() => handleUndo(ev)}>Undo</button>
+                          )}
+                        </div>
+                      ));
+                    })()}
+                  </details>
                 </div>
               </div>
             </div>
